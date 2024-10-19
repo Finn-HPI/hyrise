@@ -5,6 +5,9 @@
 #include <cstdint>
 #include <cstring>
 #include <utility>
+#include <vector>
+
+#include <boost/align/aligned_allocator.hpp>
 
 #ifndef L2_CACHE_SIZE
 #define L2_CACHE_SIZE 262144  // Default value (256KiB)
@@ -16,6 +19,12 @@
 #define INTERLEAVE_UPPERS 2, 6, 3, 7
 
 namespace hyrise {
+
+template <class T, std::size_t alignment = 1>
+using aligned_vector = std::vector<T, boost::alignment::aligned_allocator<T, alignment>>;
+
+template <typename T>
+using simd_vector = aligned_vector<T, 64>;
 
 template <typename T>
 constexpr size_t block_size() {
@@ -45,7 +54,7 @@ inline __attribute((always_inline)) VecType load_unaligned(T* addr) {
   using UnalignedVecType __attribute__((aligned(1))) = VecType;
   auto vec = UnalignedVecType{};
   std::memcpy(&vec, addr, sizeof(VecType));
-  return std::move(vec);
+  return vec;
 }
 
 template <typename VecType, typename T>
@@ -59,22 +68,8 @@ inline void __attribute((always_inline)) store_unaligned(VecType data, T* __rest
 
 template <size_t register_count, size_t elements_per_register, typename VecType>
 struct MultiVec {
-  template <typename T>
-  inline void __attribute__((always_inline)) load(T* /*address*/) {
-    static_assert(false, "Not implemented.");
-  }
-
-  template <typename T>
-  inline void __attribute__((always_inline)) store(T* /*address*/) {
-    static_assert(false, "Not implemented.");
-  }
-
-  inline VecType& __attribute__((always_inline)) first() {
-    static_assert(false, "Not implemented.");
-  }
-
-  inline VecType& __attribute__((always_inline)) last() {
-    static_assert(false, "Not implemented.");
+  MultiVec() {
+    static_assert(false, "Not implemented");
   }
 };
 
@@ -161,14 +156,14 @@ struct MultiVec<4, elements_per_register, VecType> {
 
 // Collection of utility functions.
 
-template <typename T>
-inline __attribute((always_inline)) bool is_aligned(T* addr, size_t byte_alignment) {
-  return reinterpret_cast<std::uintptr_t>(addr) % byte_alignment == 0;
+template <typename T, std::size_t alignment = 1>
+inline __attribute((always_inline)) bool is_simd_aligned(const T* addr) {
+  return reinterpret_cast<std::uintptr_t>(addr) % alignment == 0;
 }
 
 template <typename BlockType, typename T>
-inline void __attribute__((always_inline))
-choose_next_and_update_pointers(BlockType*& next, BlockType*& a_ptr, BlockType*& b_ptr) {
+inline void __attribute__((always_inline)) choose_next_and_update_pointers(BlockType*& next, BlockType*& a_ptr,
+                                                                           BlockType*& b_ptr) {
   const int8_t cmp = *reinterpret_cast<T*>(a_ptr) < *reinterpret_cast<T*>(b_ptr);
   next = cmp ? a_ptr : b_ptr;
   a_ptr += cmp;

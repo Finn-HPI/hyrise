@@ -7,8 +7,6 @@
 #include <random>
 #include <utils/assert.hpp>
 
-#include <boost/align/aligned_allocator.hpp>
-
 #include "cxxopts.hpp"
 
 #include "operators/join_simd_sort_merge/simd_local_sort.hpp"
@@ -24,9 +22,6 @@ auto get_uniform_distribution(T min, T max) {
   }
 }
 
-template <class T, std::size_t alignment = 1>
-using aligned_vector = std::vector<T, boost::alignment::aligned_allocator<T, alignment>>;
-
 template <size_t count_per_register, typename KeyType>
 void benchmark(const size_t scale, const size_t num_warumup_runs, const size_t num_runs, std::ofstream& out) {
   using std::chrono::duration;
@@ -40,17 +35,16 @@ void benchmark(const size_t scale, const size_t num_warumup_runs, const size_t n
   std::mt19937 gen(rnd());
   auto dis = get_uniform_distribution<KeyType>(0, std::numeric_limits<KeyType>::max());
 
-  constexpr auto ALIGNMENT = 32;
-
   const auto base_num_items = 1'048'576;  // 2^20
   const auto num_items = base_num_items * scale;
 
   std::cout << "num_items: " << num_items << std::endl;
 
-  auto data = aligned_vector<KeyType, ALIGNMENT>(num_items);
-  auto data_std_sort = aligned_vector<KeyType, ALIGNMENT>(num_items);
-  auto data_simd_sort = aligned_vector<KeyType, ALIGNMENT>(num_items);
-  auto output_simd_sort = aligned_vector<KeyType, ALIGNMENT>(num_items);
+  using hyrise::simd_vector;
+  auto data = simd_vector<KeyType>(num_items);
+  auto data_std_sort = simd_vector<KeyType>(num_items);
+  auto data_simd_sort = simd_vector<KeyType>(num_items);
+  auto output_simd_sort = simd_vector<KeyType>(num_items);
 
   for (auto& val : data) {
     val = dis(gen);
