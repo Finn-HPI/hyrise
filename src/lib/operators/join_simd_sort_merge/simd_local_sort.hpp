@@ -24,7 +24,7 @@ static inline void __attribute__((always_inline)) compare_min_max(VecType& input
 
 template <size_t elements_per_register, typename T>
 struct SortingNetwork {
-  static inline void __attribute__((always_inline)) sort(T* /*data*/, T* /*output*/) {
+  SortingNetwork() {
     static_assert(false, "Not implemented.");
   }
 };

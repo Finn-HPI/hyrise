@@ -3,6 +3,7 @@
 #include <vector>
 
 #include "base_test.hpp"
+#include "operators/join_simd_sort_merge/simd_local_sort.hpp"
 #include "operators/join_simd_sort_merge/simd_utils.hpp"
 
 namespace hyrise {
@@ -191,6 +192,46 @@ TYPED_TEST(SIMDSortTest, ChooseNextAndUpdatePointers) {
     EXPECT_EQ(*a_pointer, input_a.front());
     EXPECT_EQ(*b_pointer, input_b[1]);
     EXPECT_EQ(next, input_b.data());
+  }
+}
+
+TYPED_TEST(SIMDSortTest, SortingNetwork) {
+  // Tests for 2x2 sorting network.
+  {
+    auto input = simd_vector<TypeParam>{4, 3, 1, 6};
+    auto output = simd_vector<TypeParam>(4);
+    const auto result = simd_vector<TypeParam>{1, 4, 3, 6};
+    SortingNetwork<2, TypeParam>::sort(input.data(), output.data());
+    EXPECT_EQ(output, result);
+  }
+  {
+    auto input = simd_vector<TypeParam>{1, 5, 1, 2};
+    const auto result = simd_vector<TypeParam>{1, 1, 2, 5};
+    auto output = simd_vector<TypeParam>(4);
+
+    SortingNetwork<2, TypeParam>::sort(input.data(), output.data());
+    EXPECT_EQ(output, result);
+  }
+  // Tests for 4x4 sorting network.
+  {
+    // clang-format off
+    auto input = simd_vector<TypeParam>{
+      4, 8, 12, 15,
+      16, 3, 7, 11,
+      14, 15, 2, 6,
+      10, 13, 14, 1
+    };
+    const auto result = simd_vector<TypeParam>{
+      4, 10, 14, 16,
+      3, 8, 13, 15,
+      2, 7, 12, 14,
+      1, 6, 11, 15
+    };
+    // clang-format on
+    auto output = simd_vector<TypeParam>(16);
+
+    SortingNetwork<4, TypeParam>::sort(input.data(), output.data());
+    EXPECT_EQ(output, result);
   }
 }
 
