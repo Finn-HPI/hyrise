@@ -4,20 +4,23 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <utility>
 
 #ifndef L2_CACHE_SIZE
 #define L2_CACHE_SIZE 262144  // Default value (256KiB)
 #endif
 
-template <typename T>
-constexpr size_t block_size() {
-  return L2_CACHE_SIZE / (2 * sizeof(T));
-}
-
 #define LOWER_HALVES 0, 1, 4, 5
 #define UPPER_HALVES 2, 3, 6, 7
 #define INTERLEAVE_LOWERS 0, 4, 1, 5
 #define INTERLEAVE_UPPERS 2, 6, 3, 7
+
+namespace hyrise {
+
+template <typename T>
+constexpr size_t block_size() {
+  return L2_CACHE_SIZE / (2 * sizeof(T));
+}
 
 template <size_t reg_size, typename T>
 using Vec __attribute__((vector_size(reg_size))) = T;
@@ -164,8 +167,8 @@ inline __attribute((always_inline)) bool is_aligned(T* addr, size_t byte_alignme
 }
 
 template <typename BlockType, typename T>
-inline void __attribute__((always_inline)) choose_next_and_update_pointers(BlockType*& next, BlockType*& a_ptr,
-                                                                           BlockType*& b_ptr) {
+inline void __attribute__((always_inline))
+choose_next_and_update_pointers(BlockType*& next, BlockType*& a_ptr, BlockType*& b_ptr) {
   const int8_t cmp = *reinterpret_cast<T*>(a_ptr) < *reinterpret_cast<T*>(b_ptr);
   next = cmp ? a_ptr : b_ptr;
   a_ptr += cmp;
@@ -176,3 +179,5 @@ template <size_t kernel_size>
 constexpr size_t get_alignment_bitmask() {
   return ~(kernel_size - 1);
 }
+
+};  // namespace hyrise

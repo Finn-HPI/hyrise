@@ -4,13 +4,14 @@
 #include <cstdint>
 #include <fstream>
 #include <iostream>
-#include <operators/join_simd_sort_merge/simd_local_sort.hpp>
 #include <random>
 #include <utils/assert.hpp>
 
 #include <boost/align/aligned_allocator.hpp>
 
 #include "cxxopts.hpp"
+
+#include "operators/join_simd_sort_merge/simd_local_sort.hpp"
 
 template <typename T>
 auto get_uniform_distribution(T min, T max) {
@@ -86,7 +87,7 @@ void benchmark(const size_t scale, const size_t num_warumup_runs, const size_t n
     std::sort(data_std_sort.begin(), data_std_sort.end());
     auto end_std_sort = std::chrono::steady_clock::now();
 
-    //NOLINTNEXTLINE
+    // NOLINTNEXTLINE
     asm volatile("" : : "r"(data_std_sort.data()) : "memory");  // Ensures std::sort is not optimized away
 
     /////////////////////////////
@@ -111,7 +112,7 @@ void benchmark(const size_t scale, const size_t num_warumup_runs, const size_t n
     //////////////////////////////
 
     auto start_simd_sort = std::chrono::steady_clock::now();
-    simd_sort<count_per_register>(input_ptr, output_ptr, num_items);
+    hyrise::simd_sort<count_per_register>(input_ptr, output_ptr, num_items);
     auto end_simd_sort = std::chrono::steady_clock::now();
 
     /////////////////////////////
@@ -122,7 +123,6 @@ void benchmark(const size_t scale, const size_t num_warumup_runs, const size_t n
         std::chrono::duration_cast<std::chrono::milliseconds>(end_simd_sort - start_simd_sort).count();
 
     auto& sorted_data = (output_ptr == output_simd_sort.data()) ? output_simd_sort : data_simd_sort;
-
     Assert(std::ranges::is_sorted(sorted_data), "The simd_sort did not produce a sorted result");
     Assert(sorted_data == data_std_sort, "Ouput of simd_sort is not the same as std::sort.");
 
@@ -149,13 +149,12 @@ int main(int argc, char* argv[]) {
   cxxopts::Options options("SIMDSort", "A single-threaded simd_sort benchmark.");
   // clang-format off
   options.add_options()
-  ("c,cpr", "element count per simd register", cxxopts::value<size_t>()->default_value("4")) 
+  ("c,cpr", "element count per simd register", cxxopts::value<size_t>()->default_value("4"))
   ("t,dt", "element data type", cxxopts::value<std::string>()->default_value("double"))
   ("w,warmup", "number of warmup runs", cxxopts::value<size_t>()->default_value("1"))
   ("r,runs", "number of runs", cxxopts::value<size_t>()->default_value("5"))
-  ("o,output", "Output file name", cxxopts::value<std::string>()->default_value("benchmark.csv")) 
-  ("h,help", "Print usage")
-  ;
+  ("o,output", "Output file name", cxxopts::value<std::string>()->default_value("benchmark.csv"))
+  ("h,help", "Print usage");
   // clang-format on
   auto result = options.parse(argc, argv);
   if (result.count("help") != 0u) {

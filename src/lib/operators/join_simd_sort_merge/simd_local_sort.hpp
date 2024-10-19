@@ -1,11 +1,16 @@
+#pragma once
+#include <algorithm>
 #include <array>
 #include <cassert>
 #include <cmath>
 #include <cstddef>
+#include <utility>
 #include <vector>
 
 #include "simd_utils.hpp"
 #include "two_way_merge.hpp"
+
+namespace hyrise {
 
 template <typename VecType>
 static inline void __attribute__((always_inline)) compare_min_max(VecType& input1, VecType& input2) {
@@ -155,7 +160,7 @@ inline void __attribute__((always_inline)) simd_sort_block(T*& input_ptr, T*& ou
 
 template <size_t count_per_register, typename T>
 inline void __attribute__((always_inline)) simd_sort_incomplete_block(T*& input_ptr, T*& output_ptr) {
-  //TODO(finn)::
+  // TODO(finn): Implement.
 }
 
 template <typename T>
@@ -231,3 +236,4 @@ void simd_sort(T*& input_ptr, T*& output_ptr, size_t element_count) {
   output_ptr = block_infos[0].input;
   input_ptr = block_infos[0].output;
 }
+}  // namespace hyrise

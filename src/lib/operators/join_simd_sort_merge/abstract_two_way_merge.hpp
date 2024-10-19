@@ -3,30 +3,87 @@
 
 #include "simd_utils.hpp"
 
+namespace hyrise {
+
+constexpr auto MERGE_AB = 2;
+constexpr auto MERGE_2AB = 4;
+
+constexpr auto MERGE_4AB = 8;
+
 template <size_t count_per_register, typename T, typename Derived>
 class AbstractTwoWayMerge {
   static constexpr auto REGISTER_SIZE = count_per_register * sizeof(T);
   using VecType = Vec<REGISTER_SIZE, T>;
 
  protected:
-  template <size_t kernel_size, typename MulitVecType>
+  template <size_t input_count, typename MulitVecType>
   struct BitonicMergeNetwork {
-    static inline void __attribute__((always_inline)) merge(MulitVecType& /*in1*/, MulitVecType& /*in2*/,
-                                                            MulitVecType& /*out1*/, MulitVecType& /*out2*/) {
+    static inline void __attribute__((always_inline))
+    merge(MulitVecType& /*in1*/, MulitVecType& /*in2*/, MulitVecType& /*out1*/, MulitVecType& /*out2*/) {
       static_assert(false, "Not implemented.");
     }
   };
 
+  template <typename MultiVecType>
+  struct BitonicMergeNetwork<MERGE_AB, MultiVecType> {
+    static inline void __attribute__((always_inline))
+    merge(MultiVecType& in1, MultiVecType& in2, MultiVecType& out1, MultiVecType& out2) {
+      Derived::_reverse(in2.a);
+      Derived::_merge_network_input_x2(in1.a, in2.a, out1.a, out2.a);
+    }
+  };
+
+  // NOLINTBEGIN(cppcoreguidelines-pro-type-vararg, hicpp-vararg)
+
+  template <typename MultiVecType>
+  struct BitonicMergeNetwork<MERGE_2AB, MultiVecType> {
+    static inline void __attribute__((always_inline))
+    merge(MultiVecType& in1, MultiVecType& in2, MultiVecType& out1, MultiVecType& out2) {
+      Derived::_reverse(in2.a);
+      Derived::_reverse(in2.b);
+      auto l11 = __builtin_elementwise_min(in1.a, in2.b);
+      auto l12 = __builtin_elementwise_min(in1.b, in2.a);
+      auto h11 = __builtin_elementwise_max(in1.a, in2.b);
+      auto h12 = __builtin_elementwise_max(in1.b, in2.a);
+      Derived::_merge_network_input_x2(l11, l12, out1.a, out1.b);
+      Derived::_merge_network_input_x2(h11, h12, out2.a, out2.b);
+    }
+  };
+
+  template <typename MultiVecType>
+  struct BitonicMergeNetwork<MERGE_4AB, MultiVecType> {
+    static inline void __attribute__((always_inline))
+    merge(MultiVecType& in1, MultiVecType& in2, MultiVecType& out1, MultiVecType& out2) {
+      Derived::_reverse(in2.a);
+      Derived::_reverse(in2.b);
+      Derived::_reverse(in2.c);
+      Derived::_reverse(in2.d);
+      auto l01 = __builtin_elementwise_min(in1.a, in2.d);
+      auto l02 = __builtin_elementwise_min(in1.b, in2.c);
+      auto l03 = __builtin_elementwise_min(in1.c, in2.b);
+      auto l04 = __builtin_elementwise_min(in1.d, in2.a);
+      auto h01 = __builtin_elementwise_max(in1.a, in2.d);
+      auto h02 = __builtin_elementwise_max(in1.b, in2.c);
+      auto h03 = __builtin_elementwise_max(in1.c, in2.b);
+      auto h04 = __builtin_elementwise_max(in1.d, in2.a);
+      Derived::_merge_network_input_x4(l01, l02, l03, l04, out1.a, out1.b, out1.c, out1.d);
+      Derived::_merge_network_input_x4(h01, h02, h03, h04, out2.a, out2.b, out2.c, out2.d);
+    }
+  };
+
+  // NOLINTEND(cppcoreguidelines-pro-type-vararg, hicpp-vararg)
+
  public:
   template <size_t kernel_size>
-  static inline void __attribute__((always_inline)) merge_equal_length(T* const a_address, T* const b_address,
-                                                                       T* const output_address, const size_t length) {
+  static inline void __attribute__((always_inline))
+  merge_equal_length(T* const a_address, T* const b_address, T* const output_address, const size_t length) {
     using block_t = struct alignas(kernel_size * sizeof(T)) {};
 
     static constexpr auto REGISTER_COUNT = kernel_size / count_per_register;
+    static constexpr auto MERGE_NETWORK_INPUT_SIZE = REGISTER_COUNT * 2;
 
     using MultiVecType = MultiVec<REGISTER_COUNT, count_per_register, VecType>;
-    using BitonicMergeNetwork = typename Derived::template BitonicMergeNetwork<kernel_size, MultiVecType>;
+    using BitonicMergeNetwork = typename Derived::template BitonicMergeNetwork<MERGE_NETWORK_INPUT_SIZE, MultiVecType>;
 
     auto* a_pointer = reinterpret_cast<block_t*>(a_address);
     auto* b_pointer = reinterpret_cast<block_t*>(b_address);
@@ -80,14 +137,15 @@ class AbstractTwoWayMerge {
   }
 
   template <size_t kernel_size>
-  static inline void __attribute__((always_inline)) merge_variable_length(T* a_address, T* b_address, T* output_address,
-                                                                          const size_t a_length,
-                                                                          const size_t b_length) {
+  static inline void __attribute__((always_inline))
+  merge_variable_length(T* a_address, T* b_address, T* output_address, const size_t a_length, const size_t b_length) {
     using block_t = struct alignas(kernel_size * sizeof(T)) {};
 
     static constexpr auto REGISTER_COUNT = kernel_size / count_per_register;
+    static constexpr auto MERGE_NETWORK_INPUT_SIZE = REGISTER_COUNT * 2;
+
     using MultiVecType = MultiVec<REGISTER_COUNT, count_per_register, VecType>;
-    using BitonicMergeNetwork = typename Derived::template BitonicMergeNetwork<kernel_size, MultiVecType>;
+    using BitonicMergeNetwork = typename Derived::template BitonicMergeNetwork<MERGE_NETWORK_INPUT_SIZE, MultiVecType>;
     constexpr auto ALIGNMENT_BIT_MASK = get_alignment_bitmask<kernel_size>();
 
     const auto a_rounded_length = a_length & ALIGNMENT_BIT_MASK;
@@ -172,3 +230,4 @@ class AbstractTwoWayMerge {
     }
   }
 };
+}  // namespace hyrise
