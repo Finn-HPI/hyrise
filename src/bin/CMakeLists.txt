@@ -23,6 +23,17 @@ target_link_libraries(
     hyriseBenchmarkLib
 )
 
+add_executable(
+    hyriseBenchmarkSIMD
+    benchmark.cpp
+)
+
+target_link_libraries(
+    hyriseBenchmarkSIMD
+    hyrise
+    hyriseBenchmarkLib
+)
+
 # Configure client
 add_executable(
     hyriseClient
