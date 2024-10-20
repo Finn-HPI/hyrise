@@ -229,7 +229,7 @@ TYPED_TEST(SimdTwoWayMergeTest, BitonicMergeNetworkMerge4AB) {
 }
 
 TYPED_TEST(SimdTwoWayMergeTest, MergeEqLength) {
-  auto test_merge_eq_length = []<size_t count_per_vector>() {
+  auto test_merge_eq_length = []<std::size_t count_per_vector>() {
     using TwoWayMerge = TwoWayMerge<count_per_vector, TypeParam>;
 
     constexpr auto START_LENGTH = 4 * count_per_vector;
@@ -266,7 +266,7 @@ TYPED_TEST(SimdTwoWayMergeTest, MergeEqLength) {
 }
 
 TYPED_TEST(SimdTwoWayMergeTest, MergeVariableLength) {
-  auto test_merge_var_length = []<size_t count_per_vector>() {
+  auto test_merge_var_length = []<std::size_t count_per_vector>() {
     using TwoWayMerge = TwoWayMerge<count_per_vector, TypeParam>;
 
     constexpr auto START_LENGTH = 4 * count_per_vector;

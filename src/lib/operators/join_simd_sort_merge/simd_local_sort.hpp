@@ -3,7 +3,6 @@
 #include <array>
 #include <cassert>
 #include <cmath>
-#include <cstddef>
 #include <utility>
 #include <vector>
 
@@ -14,12 +13,12 @@ namespace hyrise {
 
 // https://stackoverflow.com/questions/35311711/whats-the-right-way-to-compute-integral-base-2-logarithms-at-compile-time
 template <typename T>
-constexpr size_t cilog2(T val) {
+constexpr std::size_t cilog2(T val) {
   return (val != 0u) ? 1 + cilog2(val >> 1u) : -1;
 }
 
-template <size_t count_per_register, size_t kernel_size, typename T>
-void merge_level(size_t level, std::array<T*, 2>& ptrs) {
+template <std::size_t count_per_register, std::size_t kernel_size, typename T>
+void merge_level(std::size_t level, std::array<T*, 2>& ptrs) {
   constexpr auto BLOCK_SIZE = block_size<T>();
   auto ptr_index = level & 1u;
   auto* input = ptrs[ptr_index];
@@ -36,15 +35,15 @@ void merge_level(size_t level, std::array<T*, 2>& ptrs) {
   }
 }
 
-template <size_t count_per_register, typename T>
+template <std::size_t count_per_register, typename T>
 inline void __attribute__((always_inline)) simd_sort_block(T*& input_ptr, T*& output_ptr) {
   constexpr auto BLOCK_SIZE = block_size<T>();
   constexpr auto START_LEVEL = cilog2(count_per_register);
 
-  auto ptrs = std::array<T*, 2>{};
-  auto pointer_index = START_LEVEL & 1u;
-  ptrs[pointer_index] = input_ptr;
-  ptrs[pointer_index ^ 1u] = output_ptr;
+  auto input_output_pointers = std::array<T*, 2>{};
+  auto input_selection_index = START_LEVEL & 1u;
+  input_output_pointers[input_selection_index] = input_ptr;
+  input_output_pointers[input_selection_index ^ 1u] = output_ptr;
   {
     using block_t = struct alignas(sizeof(T) * count_per_register * count_per_register) {};
 
@@ -58,17 +57,17 @@ inline void __attribute__((always_inline)) simd_sort_block(T*& input_ptr, T*& ou
   }
   constexpr auto LOG_BLOCK_SIZE = cilog2(BLOCK_SIZE);
   constexpr auto STOP_LEVEL = LOG_BLOCK_SIZE - 2;
-  merge_level<count_per_register, count_per_register>(START_LEVEL, ptrs);
-  merge_level<count_per_register, count_per_register * 2>(START_LEVEL + 1, ptrs);
+  merge_level<count_per_register, count_per_register>(START_LEVEL, input_output_pointers);
+  merge_level<count_per_register, count_per_register * 2>(START_LEVEL + 1, input_output_pointers);
 #pragma unroll
-  for (auto level = size_t{START_LEVEL + 2}; level < STOP_LEVEL; ++level) {
-    merge_level<count_per_register, count_per_register * 4>(level, ptrs);
+  for (auto level = std::size_t{START_LEVEL + 2}; level < STOP_LEVEL; ++level) {
+    merge_level<count_per_register, count_per_register * 4>(level, input_output_pointers);
   }
 
   auto input_length = 1u << STOP_LEVEL;
-  pointer_index = STOP_LEVEL & 1u;
-  auto* input = ptrs[pointer_index];
-  auto* output = ptrs[pointer_index ^ 1u];
+  input_selection_index = STOP_LEVEL & 1u;
+  auto* input = input_output_pointers[input_selection_index];
+  auto* output = input_output_pointers[input_selection_index ^ 1u];
 
   using TwoWayMerge = TwoWayMerge<count_per_register, T>;
   TwoWayMerge::template merge_equal_length<count_per_register * 4>(input, input + input_length, output, input_length);
@@ -80,7 +79,7 @@ inline void __attribute__((always_inline)) simd_sort_block(T*& input_ptr, T*& ou
   output_ptr = input;
 }
 
-template <size_t count_per_register, typename T>
+template <std::size_t count_per_register, typename T>
 inline void __attribute__((always_inline)) simd_sort_incomplete_block(T*& input_ptr, T*& output_ptr) {
   // TODO(finn): Implement.
 }
@@ -89,15 +88,14 @@ template <typename T>
 struct BlockInfo {
   T* input;
   T* output;
-  size_t size;
+  std::size_t size;
 };
 
-template <size_t count_per_register, typename T>
-void simd_sort(T*& input_ptr, T*& output_ptr, size_t element_count) {
+template <std::size_t count_per_register, typename T>
+void simd_sort(T*& input_ptr, T*& output_ptr, std::size_t element_count) {
   if (element_count <= 0) [[unlikely]] {
     return;
   }
-
   constexpr auto BLOCK_SIZE = block_size<T>();
   auto* input = input_ptr;
   auto* output = output_ptr;
@@ -109,13 +107,13 @@ void simd_sort(T*& input_ptr, T*& output_ptr, size_t element_count) {
   auto block_infos = std::vector<BlockInfo<T>>{};
   block_infos.reserve(block_count + (remaining_items > 0));
 
-  for (auto block_index = size_t{0}; block_index < block_count; ++block_index) {
+  for (auto block_index = std::size_t{0}; block_index < block_count; ++block_index) {
     const auto offset = block_index * BLOCK_SIZE;
     block_infos.emplace_back(input + offset, output + offset, BLOCK_SIZE);
   }
 
   // We then call our local sort routine for each block.
-  for (auto block_index = size_t{0}; block_index < block_count; ++block_index) {
+  for (auto block_index = std::size_t{0}; block_index < block_count; ++block_index) {
     auto& block_info = block_infos[block_index];
     simd_sort_block<count_per_register>(block_info.input, block_info.output);
     std::swap(block_info.input, block_info.output);
@@ -128,14 +126,14 @@ void simd_sort(T*& input_ptr, T*& output_ptr, size_t element_count) {
   block_count += remaining_items > 0;
 
   // Next we merge all these chunks iteratively to achieve a global sorting.
-  const auto log_n = static_cast<size_t>(std::ceil(std::log2(element_count)));
+  const auto log_n = static_cast<std::size_t>(std::ceil(std::log2(element_count)));
   constexpr auto LOG_BLOCK_SIZE = cilog2(BLOCK_SIZE);
 
   using TwoWayMerge = TwoWayMerge<count_per_register, T>;
 
   for (auto index = LOG_BLOCK_SIZE; index < log_n; ++index) {
-    auto updated_block_count = size_t{0};
-    for (auto block_index = size_t{0}; block_index < block_count - 1; block_index += 2) {
+    auto updated_block_count = std::size_t{0};
+    for (auto block_index = std::size_t{0}; block_index < block_count - 1; block_index += 2) {
       auto& a_info = block_infos[block_index];
       auto& b_info = block_infos[block_index + 1];
       auto* input_a = a_info.input;

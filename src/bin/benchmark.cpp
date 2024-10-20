@@ -1,7 +1,6 @@
 #include <algorithm>
 #include <cassert>
 #include <chrono>
-#include <cstdint>
 #include <fstream>
 #include <iostream>
 #include <random>
@@ -22,8 +21,9 @@ auto get_uniform_distribution(T min, T max) {
   }
 }
 
-template <size_t count_per_register, typename KeyType>
-void benchmark(const size_t scale, const size_t num_warumup_runs, const size_t num_runs, std::ofstream& out) {
+template <std::size_t count_per_register, typename KeyType>
+void benchmark(const std::size_t scale, const std::size_t num_warumup_runs, const std::size_t num_runs,
+               std::ofstream& out) {
   using std::chrono::duration;
   using std::chrono::duration_cast;
   using std::chrono::high_resolution_clock;
@@ -61,9 +61,9 @@ void benchmark(const size_t scale, const size_t num_warumup_runs, const size_t n
   auto* output_ptr = output_simd_sort.data();
 
   const auto num_total_runs = num_warumup_runs + num_runs;
-  for (size_t run_index = 0; run_index < num_total_runs; ++run_index) {
+  for (std::size_t run_index = 0; run_index < num_total_runs; ++run_index) {
     std::cout << "run: " << run_index << std::endl;
-    for (auto index = size_t{0}; index < num_items; ++index) {
+    for (auto index = std::size_t{0}; index < num_items; ++index) {
       data_std_sort[index] = data[index];
       data_simd_sort[index] = data[index];
     }
@@ -143,10 +143,10 @@ int main(int argc, char* argv[]) {
   cxxopts::Options options("SIMDSort", "A single-threaded simd_sort benchmark.");
   // clang-format off
   options.add_options()
-  ("c,cpr", "element count per simd register", cxxopts::value<size_t>()->default_value("4"))
+  ("c,cpr", "element count per simd register", cxxopts::value<std::size_t>()->default_value("4"))
   ("t,dt", "element data type", cxxopts::value<std::string>()->default_value("double"))
-  ("w,warmup", "number of warmup runs", cxxopts::value<size_t>()->default_value("1"))
-  ("r,runs", "number of runs", cxxopts::value<size_t>()->default_value("5"))
+  ("w,warmup", "number of warmup runs", cxxopts::value<std::size_t>()->default_value("1"))
+  ("r,runs", "number of runs", cxxopts::value<std::size_t>()->default_value("5"))
   ("o,output", "Output file name", cxxopts::value<std::string>()->default_value("benchmark.csv"))
   ("h,help", "Print usage");
   // clang-format on
@@ -155,7 +155,7 @@ int main(int argc, char* argv[]) {
     std::cout << options.help() << std::endl;
     return 0;
   }
-  const auto count_per_register = result["cpr"].as<size_t>();  // 64-bit elements with AVX2.
+  const auto count_per_register = result["cpr"].as<std::size_t>();  // 64-bit elements with AVX2.
   const auto output_path = result["output"].as<std::string>();
   std::cout << "[Configuration] cpr: " << count_per_register << std::endl;
   std::cout << "L2_CACHE_SIZE: " << L2_CACHE_SIZE << std::endl;
@@ -166,26 +166,26 @@ int main(int argc, char* argv[]) {
     return 1;
   }
   const auto key_type = result["dt"].as<std::string>();
-  const auto num_warumup_runs = result["warmup"].as<size_t>();
-  const auto num_runs = result["runs"].as<size_t>();
+  const auto num_warumup_runs = result["warmup"].as<std::size_t>();
+  const auto num_runs = result["runs"].as<std::size_t>();
 
   if (count_per_register == 4) {
     if (key_type == "double") {
-      for (auto scale = size_t{1}; scale <= 256; scale *= 2) {
+      for (auto scale = std::size_t{1}; scale <= 256; scale *= 2) {
         benchmark<4, double>(scale, num_warumup_runs, num_runs, output_file);
       }
     } else if (key_type == "int64_t") {
-      for (auto scale = size_t{1}; scale <= 256; scale *= 2) {
+      for (auto scale = std::size_t{1}; scale <= 256; scale *= 2) {
         benchmark<4, int64_t>(scale, num_warumup_runs, num_runs, output_file);
       }
     }
   } else if (count_per_register == 2) {
     if (key_type == "double") {
-      for (auto scale = size_t{1}; scale <= 256; scale *= 2) {
+      for (auto scale = std::size_t{1}; scale <= 256; scale *= 2) {
         benchmark<2, double>(scale, num_warumup_runs, num_runs, output_file);
       }
     } else if (key_type == "int64_t") {
-      for (auto scale = size_t{1}; scale <= 256; scale *= 2) {
+      for (auto scale = std::size_t{1}; scale <= 256; scale *= 2) {
         benchmark<2, int64_t>(scale, num_warumup_runs, num_runs, output_file);
       }
     }

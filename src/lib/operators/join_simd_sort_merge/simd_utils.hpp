@@ -1,8 +1,6 @@
 #pragma once
 
 #include <algorithm>
-#include <cstddef>
-#include <cstdint>
 #include <cstring>
 #include <utility>
 #include <vector>
@@ -27,11 +25,11 @@ template <typename T>
 using simd_vector = aligned_vector<T, 64>;
 
 template <typename T>
-constexpr size_t block_size() {
+constexpr std::size_t block_size() {
   return L2_CACHE_SIZE / (2 * sizeof(T));
 }
 
-template <size_t reg_size, typename T>
+template <std::size_t reg_size, typename T>
 using Vec __attribute__((vector_size(reg_size))) = T;
 
 // Loading and Storing SIMD registers.
@@ -66,14 +64,14 @@ inline void __attribute((always_inline)) store_unaligned(VecType data, T* __rest
 
 // Struct for loading & storing  multiple vector registers.
 
-template <size_t register_count, size_t elements_per_register, typename VecType>
+template <std::size_t register_count, std::size_t elements_per_register, typename VecType>
 struct MultiVec {
   MultiVec() {
     static_assert(false, "Not implemented");
   }
 };
 
-template <size_t elements_per_register, typename VecType>
+template <std::size_t elements_per_register, typename VecType>
 struct MultiVec<1, elements_per_register, VecType> {
   VecType a;
 
@@ -96,7 +94,7 @@ struct MultiVec<1, elements_per_register, VecType> {
   }
 };
 
-template <typename VecType, size_t elements_per_register>
+template <typename VecType, std::size_t elements_per_register>
 struct MultiVec<2, elements_per_register, VecType> {
   VecType a;
   VecType b;
@@ -122,7 +120,7 @@ struct MultiVec<2, elements_per_register, VecType> {
   }
 };
 
-template <typename VecType, size_t elements_per_register>
+template <typename VecType, std::size_t elements_per_register>
 struct MultiVec<4, elements_per_register, VecType> {
   VecType a;
   VecType b;
@@ -156,7 +154,7 @@ struct MultiVec<4, elements_per_register, VecType> {
 
 // Sorting Networks for input sizes 2 and 4.
 
-template <size_t elements_per_register, typename T>
+template <std::size_t elements_per_register, typename T>
 struct SortingNetwork {
   SortingNetwork() {
     static_assert(false, "Not implemented.");
@@ -242,16 +240,16 @@ inline __attribute((always_inline)) bool is_simd_aligned(const T* addr) {
 }
 
 template <typename BlockType, typename T>
-inline void __attribute__((always_inline))
-choose_next_and_update_pointers(BlockType*& next, BlockType*& a_ptr, BlockType*& b_ptr) {
+inline void __attribute__((always_inline)) choose_next_and_update_pointers(BlockType*& next, BlockType*& a_ptr,
+                                                                           BlockType*& b_ptr) {
   const int8_t cmp = *reinterpret_cast<T*>(a_ptr) < *reinterpret_cast<T*>(b_ptr);
   next = cmp ? a_ptr : b_ptr;
   a_ptr += cmp;
   b_ptr += !cmp;
 }
 
-template <size_t kernel_size>
-constexpr size_t get_alignment_bitmask() {
+template <std::size_t kernel_size>
+constexpr std::size_t get_alignment_bitmask() {
   return ~(kernel_size - 1);
 }
 

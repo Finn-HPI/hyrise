@@ -10,13 +10,13 @@ constexpr auto MERGE_2AB = 4;
 
 constexpr auto MERGE_4AB = 8;
 
-template <size_t count_per_register, typename T, typename Derived>
+template <std::size_t count_per_register, typename T, typename Derived>
 class AbstractTwoWayMerge {
   static constexpr auto REGISTER_SIZE = count_per_register * sizeof(T);
   using VecType = Vec<REGISTER_SIZE, T>;
 
  public:
-  template <size_t input_count, typename MulitVecType>
+  template <std::size_t input_count, typename MulitVecType>
   struct BitonicMergeNetwork {
     static inline void __attribute__((always_inline)) merge(MulitVecType& /*in1*/, MulitVecType& /*in2*/,
                                                             MulitVecType& /*out1*/, MulitVecType& /*out2*/) {
@@ -73,9 +73,10 @@ class AbstractTwoWayMerge {
 
   // NOLINTEND(cppcoreguidelines-pro-type-vararg, hicpp-vararg)
 
-  template <size_t kernel_size>
+  template <std::size_t kernel_size>
   static inline void __attribute__((always_inline)) merge_equal_length(T* const a_address, T* const b_address,
-                                                                       T* const output_address, const size_t length) {
+                                                                       T* const output_address,
+                                                                       const std::size_t length) {
     using block_t = struct alignas(kernel_size * sizeof(T)) {};
 
     static constexpr auto REGISTER_COUNT = kernel_size / count_per_register;
@@ -135,10 +136,10 @@ class AbstractTwoWayMerge {
     upper_merge_output.store(reinterpret_cast<T*>(output_pointer));
   }
 
-  template <size_t kernel_size>
+  template <std::size_t kernel_size>
   static inline void __attribute__((always_inline)) merge_variable_length(T* a_address, T* b_address, T* output_address,
-                                                                          const size_t a_length,
-                                                                          const size_t b_length) {
+                                                                          const std::size_t a_length,
+                                                                          const std::size_t b_length) {
     using block_t = struct alignas(kernel_size * sizeof(T)) {};
 
     static constexpr auto REGISTER_COUNT = kernel_size / count_per_register;
@@ -151,8 +152,8 @@ class AbstractTwoWayMerge {
     const auto a_rounded_length = a_length & ALIGNMENT_BIT_MASK;
     const auto b_rounded_length = b_length & ALIGNMENT_BIT_MASK;
 
-    auto a_index = size_t{0};
-    auto b_index = size_t{0};
+    auto a_index = std::size_t{0};
+    auto b_index = std::size_t{0};
 
     auto& out = output_address;
 
