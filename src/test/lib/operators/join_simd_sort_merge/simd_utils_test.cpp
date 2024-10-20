@@ -3,7 +3,6 @@
 #include <vector>
 
 #include "base_test.hpp"
-#include "operators/join_simd_sort_merge/simd_local_sort.hpp"
 #include "operators/join_simd_sort_merge/simd_utils.hpp"
 
 namespace hyrise {
@@ -11,18 +10,18 @@ namespace hyrise {
 using data_type_list = testing::Types<double, int64_t, uint64_t>;
 
 template <class>
-class SIMDSortTest : public BaseTest {};
+class SimdUtilsTest : public BaseTest {};
 
-TYPED_TEST_SUITE(SIMDSortTest, data_type_list);
+TYPED_TEST_SUITE(SimdUtilsTest, data_type_list);
 
-TYPED_TEST(SIMDSortTest, CreateAlignedData) {
+TYPED_TEST(SimdUtilsTest, CreateAlignedData) {
   constexpr auto NUM_ITEMS = 1'000'000;
   constexpr auto ALIGNMENT = 64;  // Biggest alignment needed (AVX-512).
   const auto simd_aligned_vector = simd_vector<TypeParam>(NUM_ITEMS);
   EXPECT_TRUE((is_simd_aligned<TypeParam, ALIGNMENT>(simd_aligned_vector.data())));
 }
 
-TYPED_TEST(SIMDSortTest, LoadAndStoreAligned) {
+TYPED_TEST(SimdUtilsTest, LoadAndStoreAligned) {
   const auto input = simd_vector<TypeParam>{1, 2, 3, 4, 5, 6, 7, 8};
   {
     constexpr auto COUNT_PER_VECTOR = 2;
@@ -50,7 +49,7 @@ TYPED_TEST(SIMDSortTest, LoadAndStoreAligned) {
   }
 }
 
-TYPED_TEST(SIMDSortTest, LoadAndStoreUnaligned) {
+TYPED_TEST(SimdUtilsTest, LoadAndStoreUnaligned) {
   const auto input = simd_vector<TypeParam>{1, 2, 3, 4, 5, 6, 7, 8};
   {
     constexpr auto COUNT_PER_VECTOR = 2;
@@ -78,11 +77,11 @@ TYPED_TEST(SIMDSortTest, LoadAndStoreUnaligned) {
   }
 }
 
-TYPED_TEST(SIMDSortTest, SortBlockSize) {
+TYPED_TEST(SimdUtilsTest, SortBlockSize) {
   EXPECT_EQ(block_size<TypeParam>() * sizeof(TypeParam), L2_CACHE_SIZE / 2);
 }
 
-TYPED_TEST(SIMDSortTest, MultiVec) {
+TYPED_TEST(SimdUtilsTest, MultiVec) {
   using Vec2 = Vec<16, TypeParam>;  // Vector of 2 64-bit elements.
   using Vec4 = Vec<32, TypeParam>;  // Vector of 4 64-bit elements.
 
@@ -156,7 +155,7 @@ TYPED_TEST(SIMDSortTest, MultiVec) {
   }
 }
 
-TYPED_TEST(SIMDSortTest, ChooseNextAndUpdatePointers) {
+TYPED_TEST(SimdUtilsTest, ChooseNextAndUpdatePointers) {
   {
     auto input_a = std::vector<TypeParam>{1, 2};
     auto input_b = std::vector<TypeParam>{3, 4};
@@ -195,20 +194,43 @@ TYPED_TEST(SIMDSortTest, ChooseNextAndUpdatePointers) {
   }
 }
 
-TYPED_TEST(SIMDSortTest, SortingNetwork) {
+TYPED_TEST(SimdUtilsTest, GetAlignmentBitmask) {
+  // Bitmasks are used to round to a multiple of the kernel_size.
+  EXPECT_EQ((get_alignment_bitmask<2>()), ~1);
+  EXPECT_EQ((get_alignment_bitmask<4>()), ~3);
+  EXPECT_EQ((get_alignment_bitmask<8>()), ~7);
+  EXPECT_EQ((get_alignment_bitmask<16>()), ~15);
+}
+
+TYPED_TEST(SimdUtilsTest, SortingNetwork) {
   // Tests for 2x2 sorting network.
   {
-    auto input = simd_vector<TypeParam>{4, 3, 1, 6};
+    // clang-format off
+    auto input = simd_vector<TypeParam>{
+      4, 3,
+      1, 6
+    };
+    const auto result = simd_vector<TypeParam>{
+      1, 4,
+      3, 6
+    };
+    // clang-format on
     auto output = simd_vector<TypeParam>(4);
-    const auto result = simd_vector<TypeParam>{1, 4, 3, 6};
     SortingNetwork<2, TypeParam>::sort(input.data(), output.data());
     EXPECT_EQ(output, result);
   }
   {
-    auto input = simd_vector<TypeParam>{1, 5, 1, 2};
-    const auto result = simd_vector<TypeParam>{1, 1, 2, 5};
+    // clang-format off
+    auto input = simd_vector<TypeParam>{
+      1, 5,
+      1, 2
+    };
+    const auto result = simd_vector<TypeParam>{
+      1, 1,
+      2, 5
+    };
+    // clang-format on
     auto output = simd_vector<TypeParam>(4);
-
     SortingNetwork<2, TypeParam>::sort(input.data(), output.data());
     EXPECT_EQ(output, result);
   }

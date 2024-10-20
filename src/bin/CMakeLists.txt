@@ -25,6 +25,7 @@ target_link_libraries(
 
 add_executable(
     hyriseBenchmarkSIMD
+    cxxopts.hpp
     benchmark.cpp
 )
 

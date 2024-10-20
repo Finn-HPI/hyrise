@@ -7,25 +7,26 @@ namespace hyrise {
 
 template <size_t count_per_register, typename T>
 class TwoWayMerge : public AbstractTwoWayMerge<count_per_register, T, TwoWayMerge<count_per_register, T>> {
-  friend class AbstractTwoWayMerge<count_per_register, T, TwoWayMerge<count_per_register, T>>;
+  TwoWayMerge() : AbstractTwoWayMerge<count_per_register, T, TwoWayMerge<count_per_register, T>>() {
+    static_assert(false, "Not implemented.");
+  }
 };
 
 // NOLINTBEGIN(cppcoreguidelines-pro-type-vararg, hicpp-vararg)
 
 template <typename T>
 class TwoWayMerge<2, T> : public AbstractTwoWayMerge<2, T, TwoWayMerge<2, T>> {
-  friend class AbstractTwoWayMerge<2, T, TwoWayMerge<2, T>>;
   static constexpr auto COUNT_PER_REGISTER = 2;
   static constexpr auto REGISTER_SIZE = COUNT_PER_REGISTER * sizeof(T);
   using VecType = Vec<REGISTER_SIZE, T>;
 
-  // Begin merge network primitives.
-  static inline void __attribute__((always_inline)) _reverse(VecType& vec) {
+ public:
+  static inline void __attribute__((always_inline)) reverse(VecType& vec) {
     vec = __builtin_shufflevector(vec, vec, 1, 0);
   }
 
   static inline void __attribute__((always_inline))
-  _merge_network_input_x2(VecType& input_a, VecType& input_b, VecType& out1, VecType& out2) {
+  merge_network_input_x2(VecType& input_a, VecType& input_b, VecType& out1, VecType& out2) {
     // Level 1
     auto low1 = __builtin_elementwise_min(input_a, input_b);
     auto high1 = __builtin_elementwise_max(input_a, input_b);
@@ -39,32 +40,30 @@ class TwoWayMerge<2, T> : public AbstractTwoWayMerge<2, T, TwoWayMerge<2, T>> {
   }
 
   static inline void __attribute__((always_inline))
-  _merge_network_input_x4(VecType& in11, VecType& in12, VecType& in21, VecType& in22, VecType& out1, VecType& out2,
-                          VecType& out3, VecType& out4) {
+  merge_network_input_x4(VecType& in11, VecType& in12, VecType& in21, VecType& in22, VecType& out1, VecType& out2,
+                         VecType& out3, VecType& out4) {
     auto l11 = __builtin_elementwise_min(in11, in21);
     auto h11 = __builtin_elementwise_max(in11, in21);
     auto l12 = __builtin_elementwise_min(in12, in22);
     auto h12 = __builtin_elementwise_max(in12, in22);
-    _merge_network_input_x2(l11, l12, out1, out2);
-    _merge_network_input_x2(h11, h12, out3, out4);
+    merge_network_input_x2(l11, l12, out1, out2);
+    merge_network_input_x2(h11, h12, out3, out4);
   }
 };
 
 template <typename T>
 class TwoWayMerge<4, T> : public AbstractTwoWayMerge<4, T, TwoWayMerge<4, T>> {
-  friend class AbstractTwoWayMerge<4, T, TwoWayMerge<4, T>>;
-
   static constexpr auto COUNT_PER_REGISTER = 4;
   static constexpr auto REGISTER_SIZE = COUNT_PER_REGISTER * sizeof(T);
   using VecType = Vec<REGISTER_SIZE, T>;
 
-  // Begin merge network primitives.
-  static inline void __attribute__((always_inline)) _reverse(VecType& vec) {
+ public:
+  static inline void __attribute__((always_inline)) reverse(VecType& vec) {
     vec = __builtin_shufflevector(vec, vec, 3, 2, 1, 0);
   }
 
   static inline void __attribute__((always_inline))
-  _merge_network_input_x2(VecType& input_a, VecType& input_b, VecType& out1, VecType& out2) {
+  merge_network_input_x2(VecType& input_a, VecType& input_b, VecType& out1, VecType& out2) {
     // Level 1
     auto lo1 = __builtin_elementwise_min(input_a, input_b);
     auto hi1 = __builtin_elementwise_max(input_a, input_b);
@@ -84,16 +83,16 @@ class TwoWayMerge<4, T> : public AbstractTwoWayMerge<4, T, TwoWayMerge<4, T>> {
   }
 
   static inline void __attribute__((always_inline))
-  _merge_network_input_x4(VecType& in11, VecType& in12, VecType& in21, VecType& in22, VecType& out1, VecType& out2,
-                          VecType& out3, VecType& out4) {
+  merge_network_input_x4(VecType& in11, VecType& in12, VecType& in21, VecType& in22, VecType& out1, VecType& out2,
+                         VecType& out3, VecType& out4) {
     // NOLINTBEGIN
     auto l11 = __builtin_elementwise_min(in11, in21);
     auto l12 = __builtin_elementwise_min(in12, in22);
     auto h11 = __builtin_elementwise_max(in11, in21);
     auto h12 = __builtin_elementwise_max(in12, in22);
     // NOLINTEND
-    _merge_network_input_x2(l11, l12, out1, out2);
-    _merge_network_input_x2(h11, h12, out3, out4);
+    merge_network_input_x2(l11, l12, out1, out2);
+    merge_network_input_x2(h11, h12, out3, out4);
   }
 };
 
