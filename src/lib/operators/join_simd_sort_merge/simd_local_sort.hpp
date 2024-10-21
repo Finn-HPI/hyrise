@@ -38,8 +38,8 @@ void merge_level(std::size_t level, std::array<T*, 2>& ptrs, std::size_t num_ite
 }
 
 template <std::size_t count_per_register, typename T>
-inline void __attribute__((always_inline)) simd_sort_block(T*& input_ptr, T*& output_ptr,
-                                                           const std::size_t num_items = block_size<T>()) {
+inline void __attribute__((always_inline))
+simd_sort_block(T*& input_ptr, T*& output_ptr, const std::size_t num_items = block_size<T>()) {
   const auto start_level = log2_builtin(count_per_register);
 
   auto input_output_pointers = std::array<T*, 2>{};

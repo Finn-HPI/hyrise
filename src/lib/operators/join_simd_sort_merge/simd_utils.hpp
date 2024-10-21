@@ -253,8 +253,8 @@ inline __attribute((always_inline)) bool is_simd_aligned(const T* addr) {
 }
 
 template <typename BlockType, typename T>
-inline void __attribute__((always_inline)) choose_next_and_update_pointers(BlockType*& next, BlockType*& a_ptr,
-                                                                           BlockType*& b_ptr) {
+inline void __attribute__((always_inline))
+choose_next_and_update_pointers(BlockType*& next, BlockType*& a_ptr, BlockType*& b_ptr) {
   const int8_t cmp = *reinterpret_cast<T*>(a_ptr) < *reinterpret_cast<T*>(b_ptr);
   next = cmp ? a_ptr : b_ptr;
   a_ptr += cmp;

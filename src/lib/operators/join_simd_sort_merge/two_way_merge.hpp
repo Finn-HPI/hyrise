@@ -25,8 +25,8 @@ class TwoWayMerge<2, T> : public AbstractTwoWayMerge<2, T, TwoWayMerge<2, T>> {
     vec = __builtin_shufflevector(vec, vec, 1, 0);
   }
 
-  static inline void __attribute__((always_inline)) merge_network_input_x2(VecType& input_a, VecType& input_b,
-                                                                           VecType& out1, VecType& out2) {
+  static inline void __attribute__((always_inline))
+  merge_network_input_x2(VecType& input_a, VecType& input_b, VecType& out1, VecType& out2) {
     // Level 1
     auto low1 = __builtin_elementwise_min(input_a, input_b);
     auto high1 = __builtin_elementwise_max(input_a, input_b);
@@ -39,9 +39,9 @@ class TwoWayMerge<2, T> : public AbstractTwoWayMerge<2, T, TwoWayMerge<2, T>> {
     out2 = __builtin_shufflevector(low2, high2, 1, 3);
   }
 
-  static inline void __attribute__((always_inline)) merge_network_input_x4(VecType& in11, VecType& in12, VecType& in21,
-                                                                           VecType& in22, VecType& out1, VecType& out2,
-                                                                           VecType& out3, VecType& out4) {
+  static inline void __attribute__((always_inline))
+  merge_network_input_x4(VecType& in11, VecType& in12, VecType& in21, VecType& in22, VecType& out1, VecType& out2,
+                         VecType& out3, VecType& out4) {
     auto l11 = __builtin_elementwise_min(in11, in21);
     auto h11 = __builtin_elementwise_max(in11, in21);
     auto l12 = __builtin_elementwise_min(in12, in22);
@@ -62,8 +62,8 @@ class TwoWayMerge<4, T> : public AbstractTwoWayMerge<4, T, TwoWayMerge<4, T>> {
     vec = __builtin_shufflevector(vec, vec, 3, 2, 1, 0);
   }
 
-  static inline void __attribute__((always_inline)) merge_network_input_x2(VecType& input_a, VecType& input_b,
-                                                                           VecType& out1, VecType& out2) {
+  static inline void __attribute__((always_inline))
+  merge_network_input_x2(VecType& input_a, VecType& input_b, VecType& out1, VecType& out2) {
     // Level 1
     auto lo1 = __builtin_elementwise_min(input_a, input_b);
     auto hi1 = __builtin_elementwise_max(input_a, input_b);
@@ -82,9 +82,9 @@ class TwoWayMerge<4, T> : public AbstractTwoWayMerge<4, T, TwoWayMerge<4, T>> {
     out2 = __builtin_shufflevector(lo3, hi3, 2, 6, 3, 7);
   }
 
-  static inline void __attribute__((always_inline)) merge_network_input_x4(VecType& in11, VecType& in12, VecType& in21,
-                                                                           VecType& in22, VecType& out1, VecType& out2,
-                                                                           VecType& out3, VecType& out4) {
+  static inline void __attribute__((always_inline))
+  merge_network_input_x4(VecType& in11, VecType& in12, VecType& in21, VecType& in22, VecType& out1, VecType& out2,
+                         VecType& out3, VecType& out4) {
     // NOLINTBEGIN
     auto l11 = __builtin_elementwise_min(in11, in21);
     auto l12 = __builtin_elementwise_min(in12, in22);
