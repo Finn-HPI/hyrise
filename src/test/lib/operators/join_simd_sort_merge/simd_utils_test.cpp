@@ -196,10 +196,16 @@ TYPED_TEST(SimdUtilsTest, ChooseNextAndUpdatePointers) {
 
 TYPED_TEST(SimdUtilsTest, GetAlignmentBitmask) {
   // Bitmasks are used to round to a multiple of the kernel_size.
-  EXPECT_EQ((get_alignment_bitmask<2>()), ~1);
-  EXPECT_EQ((get_alignment_bitmask<4>()), ~3);
-  EXPECT_EQ((get_alignment_bitmask<8>()), ~7);
-  EXPECT_EQ((get_alignment_bitmask<16>()), ~15);
+  EXPECT_EQ((get_alignment_bitmask<2>()), ~std::size_t{1});
+  EXPECT_EQ((get_alignment_bitmask<4>()), ~std::size_t{3});
+  EXPECT_EQ((get_alignment_bitmask<8>()), ~std::size_t{7});
+  EXPECT_EQ((get_alignment_bitmask<16>()), ~std::size_t{15});
+}
+
+TYPED_TEST(SimdUtilsTest, Log2Builtin) {
+  for (auto value = std::size_t{2}; value < block_size<TypeParam>(); ++value) {
+    EXPECT_EQ(log2_builtin(value), static_cast<std::size_t>(std::log2(value)));
+  }
 }
 
 TYPED_TEST(SimdUtilsTest, SortingNetwork) {

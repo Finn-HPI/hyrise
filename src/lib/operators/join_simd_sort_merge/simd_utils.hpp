@@ -234,6 +234,19 @@ struct SortingNetwork<4, T> {
 
 // Collection of utility functions.
 
+template <typename T>
+  requires std::is_unsigned_v<T>
+inline std::size_t __attribute__((always_inline)) log2_builtin(T val) {
+  constexpr int NUM_BITS = sizeof(T) * CHAR_BIT;
+  if constexpr (NUM_BITS == 32) {
+    return (NUM_BITS - 1) - __builtin_clz(static_cast<unsigned int>(val));
+  }
+  if constexpr (NUM_BITS == 64) {
+    return (NUM_BITS - 1) - __builtin_clzll(static_cast<uint64_t>(val));
+  }
+  return (NUM_BITS - 1) - __builtin_clz(static_cast<unsigned int>(val));
+}
+
 template <typename T, std::size_t alignment = 1>
 inline __attribute((always_inline)) bool is_simd_aligned(const T* addr) {
   return reinterpret_cast<std::uintptr_t>(addr) % alignment == 0;

@@ -25,55 +25,89 @@ TYPED_TEST(SimdLocalSortTest, SortBlock) {
     std::ranges::reverse(input);
     EXPECT_FALSE(std::ranges::is_sorted(input));
 
-    auto sorted_input = input;
-    std::ranges::sort(sorted_input);
-    EXPECT_TRUE(std::ranges::is_sorted(sorted_input));
+    auto expected_output = input;
+    std::ranges::sort(expected_output);
+    EXPECT_TRUE(std::ranges::is_sorted(expected_output));
 
     auto* input_ptr = input.data();
     auto* output_ptr = temporal_storage.data();
     simd_sort_block<count_per_vector>(input_ptr, output_ptr);
     auto& sorted_data = (output_ptr == temporal_storage.data()) ? temporal_storage : input;
     EXPECT_TRUE(std::ranges::is_sorted(sorted_data));
-    EXPECT_EQ(sorted_data, sorted_input);
+    EXPECT_EQ(sorted_data, expected_output);
   };
   test_sort_block.template operator()<2>();
   test_sort_block.template operator()<4>();
 }
 
-TYPED_TEST(SimdLocalSortTest, SortMultipleBlocks) {
+TYPED_TEST(SimdLocalSortTest, SortIncompleteBlock) {
   constexpr auto BLOCK_SIZE = block_size<TypeParam>();
-
-  auto test_sort = []<std::size_t count_per_vector>(std::size_t scale) {
-    const auto num_items = scale * BLOCK_SIZE;
+  auto test_sort_block = []<std::size_t count_per_vector>(const double scale) {
+    const auto num_items = static_cast<std::size_t>(static_cast<double>(BLOCK_SIZE) * scale);
     auto input = simd_vector<TypeParam>(num_items);
     auto temporal_storage = simd_vector<TypeParam>(num_items);
     std::iota(input.begin(), input.end(), 0);
     std::ranges::reverse(input);
     EXPECT_FALSE(std::ranges::is_sorted(input));
 
-    auto sorted_input = input;
-    std::ranges::sort(sorted_input);
-    EXPECT_TRUE(std::ranges::is_sorted(sorted_input));
+    auto expected_output = input;
+    std::ranges::sort(expected_output);
+    EXPECT_TRUE(std::ranges::is_sorted(expected_output));
+
+    auto* input_ptr = input.data();
+    auto* output_ptr = temporal_storage.data();
+    simd_sort_incomplete_block<count_per_vector>(input_ptr, output_ptr, num_items);
+    auto& sorted_data = (output_ptr == temporal_storage.data()) ? temporal_storage : input;
+    EXPECT_TRUE(std::ranges::is_sorted(sorted_data));
+    EXPECT_EQ(sorted_data, expected_output);
+  };
+  constexpr auto NUM_FRACTIONS = 80;
+  constexpr auto BASE_FACTOR = double{1} / static_cast<double>(NUM_FRACTIONS);
+  for (auto scale_factor = std::size_t{1}; scale_factor < NUM_FRACTIONS; ++scale_factor) {
+    const auto scale = BASE_FACTOR * static_cast<double>(scale_factor);
+    test_sort_block.template operator()<2>(scale);
+    test_sort_block.template operator()<4>(scale);
+  }
+}
+
+TYPED_TEST(SimdLocalSortTest, SortComplete) {
+  constexpr auto BLOCK_SIZE = block_size<TypeParam>();
+
+  auto test_sort = []<std::size_t count_per_vector>(double scale) {
+    const auto num_items = static_cast<std::size_t>(scale * BLOCK_SIZE);
+    auto input = simd_vector<TypeParam>(num_items);
+    auto temporal_storage = simd_vector<TypeParam>(num_items);
+    std::iota(input.begin(), input.end(), 0);
+    std::ranges::reverse(input);
+    EXPECT_FALSE(std::ranges::is_sorted(input));
+
+    auto expected_output = input;
+    std::ranges::sort(expected_output);
+    EXPECT_TRUE(std::ranges::is_sorted(expected_output));
+    EXPECT_FALSE(std::ranges::is_sorted(input));
 
     auto* input_ptr = input.data();
     auto* output_ptr = temporal_storage.data();
     simd_sort<count_per_vector>(input_ptr, output_ptr, num_items);
+
     auto& sorted_data = (output_ptr == temporal_storage.data()) ? temporal_storage : input;
+    EXPECT_EQ(sorted_data.size(), num_items);
     EXPECT_TRUE(std::ranges::is_sorted(sorted_data));
-    EXPECT_EQ(sorted_data, sorted_input);
+    EXPECT_EQ(sorted_data, expected_output);
   };
-  constexpr auto MAX_SCALE = 64;
+  constexpr auto MAX_SCALE = 32;
+  constexpr auto NUM_FRACTIONS = 10;
   for (auto scale = std::size_t{1}; scale < MAX_SCALE; scale *= 2) {
-    test_sort.template operator()<2>(scale);
-    test_sort.template operator()<4>(scale);
+    //  Test with integer multiples of BLOCK_SIZE.
+    test_sort.template operator()<2>(static_cast<double>(scale));
+    test_sort.template operator()<4>(static_cast<double>(scale));
+    // Test with fractional multiples of BlOCK_SIZE.
+    constexpr auto BASE_FACTOR = double{1} / static_cast<double>(NUM_FRACTIONS);
+    for (auto scale_factor = std::size_t{1}; scale_factor < NUM_FRACTIONS; ++scale_factor) {
+      const auto fractional_scale_summand = BASE_FACTOR * static_cast<double>(scale_factor);
+      test_sort.template operator()<2>(static_cast<double>(scale) + fractional_scale_summand);
+      test_sort.template operator()<4>(static_cast<double>(scale) + fractional_scale_summand);
+    }
   }
 }
-
-TYPED_TEST(SimdLocalSortTest, ConstantLog2) {
-  constexpr auto MAX_VALUE = block_size<TypeParam>();
-  for (auto value = std::size_t{2}; value < MAX_VALUE; ++value) {
-    EXPECT_EQ(cilog2(value), static_cast<std::size_t>(std::log2(value)));
-  }
-}
-
 }  // namespace hyrise
