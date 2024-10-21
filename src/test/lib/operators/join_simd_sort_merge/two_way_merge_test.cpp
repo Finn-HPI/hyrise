@@ -234,27 +234,30 @@ TYPED_TEST(SimdTwoWayMergeTest, MergeEqLength) {
 
     constexpr auto START_LENGTH = 4 * count_per_vector;
     constexpr auto MAX_LENGTH = 128 * count_per_vector;
-    for (auto length = START_LENGTH; length < MAX_LENGTH; length = length * 2) {
+    for (auto length = START_LENGTH; length <= MAX_LENGTH; length = length * 2) {
       auto a_data = simd_vector<TypeParam>(length);
       auto b_data = simd_vector<TypeParam>(length);
-      std::iota(a_data.begin(), a_data.begin(), 0);
-      std::iota(b_data.begin(), b_data.begin(), a_data[length / 2]);
+      std::iota(a_data.begin(), a_data.end(), 0);
+      std::iota(b_data.begin(), b_data.end(), a_data[length / 2]);
 
       auto expected_result = simd_vector<TypeParam>{};
       std::ranges::merge(a_data, b_data, std::back_inserter(expected_result));
       {
         auto result = simd_vector<TypeParam>(length * 2);
+        EXPECT_NE(result, expected_result);
         TwoWayMerge::template merge_equal_length<count_per_vector>(a_data.data(), b_data.data(), result.data(), length);
         EXPECT_EQ(result, expected_result);
       }
       {
         auto result = simd_vector<TypeParam>(length * 2);
+        EXPECT_NE(result, expected_result);
         TwoWayMerge::template merge_equal_length<2 * count_per_vector>(a_data.data(), b_data.data(), result.data(),
                                                                        length);
         EXPECT_EQ(result, expected_result);
       }
       {
         auto result = simd_vector<TypeParam>(length * 2);
+        EXPECT_NE(result, expected_result);
         TwoWayMerge::template merge_equal_length<4 * count_per_vector>(a_data.data(), b_data.data(), result.data(),
                                                                        length);
         EXPECT_EQ(result, expected_result);
@@ -271,31 +274,40 @@ TYPED_TEST(SimdTwoWayMergeTest, MergeVariableLength) {
 
     constexpr auto START_LENGTH = 4 * count_per_vector;
     constexpr auto MAX_LENGTH = 128 * count_per_vector;
-    for (auto length = START_LENGTH; length < MAX_LENGTH; length = length * 2) {
+    for (auto length = START_LENGTH; length <= MAX_LENGTH; length = length * 2) {
       auto a_data = simd_vector<TypeParam>(length);
       auto b_data = simd_vector<TypeParam>(length + 3 * count_per_vector);
-      std::iota(a_data.begin(), a_data.begin(), 0);
-      std::iota(b_data.begin(), b_data.begin(), a_data[length / 2]);
+      std::iota(a_data.begin(), a_data.end(), 0);
+      std::iota(b_data.begin(), b_data.end(), a_data[length / 2]);
 
       const auto sum_of_lengths = a_data.size() + b_data.size();
       auto expected_result = simd_vector<TypeParam>{};
       std::ranges::merge(a_data, b_data, std::back_inserter(expected_result));
       {
+        auto a_data_copy = a_data;
+        auto b_data_copy = b_data;
         auto result = simd_vector<TypeParam>(sum_of_lengths);
-        TwoWayMerge::template merge_variable_length<count_per_vector>(a_data.data(), b_data.data(), result.data(),
-                                                                      a_data.size(), b_data.size());
+        EXPECT_NE(result, expected_result);
+        TwoWayMerge::template merge_variable_length<count_per_vector>(
+            a_data_copy.data(), b_data_copy.data(), result.data(), a_data_copy.size(), b_data_copy.size());
         EXPECT_EQ(result, expected_result);
       }
       {
+        auto a_data_copy = a_data;
+        auto b_data_copy = b_data;
         auto result = simd_vector<TypeParam>(sum_of_lengths);
-        TwoWayMerge::template merge_variable_length<2 * count_per_vector>(a_data.data(), b_data.data(), result.data(),
-                                                                          a_data.size(), b_data.size());
+        EXPECT_NE(result, expected_result);
+        TwoWayMerge::template merge_variable_length<2 * count_per_vector>(
+            a_data_copy.data(), b_data_copy.data(), result.data(), a_data_copy.size(), b_data_copy.size());
         EXPECT_EQ(result, expected_result);
       }
       {
+        auto a_data_copy = a_data;
+        auto b_data_copy = b_data;
         auto result = simd_vector<TypeParam>(sum_of_lengths);
-        TwoWayMerge::template merge_variable_length<4 * count_per_vector>(a_data.data(), b_data.data(), result.data(),
-                                                                          a_data.size(), b_data.size());
+        EXPECT_NE(result, expected_result);
+        TwoWayMerge::template merge_variable_length<4 * count_per_vector>(
+            a_data_copy.data(), b_data_copy.data(), result.data(), a_data_copy.size(), b_data_copy.size());
         EXPECT_EQ(result, expected_result);
       }
     }
