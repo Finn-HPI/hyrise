@@ -29,10 +29,10 @@ TYPED_TEST(SimdLocalSortTest, SortBlock) {
     std::ranges::sort(expected_output);
     EXPECT_TRUE(std::ranges::is_sorted(expected_output));
 
-    auto* input_ptr = input.data();
-    auto* output_ptr = temporal_storage.data();
-    simd_sort_block<count_per_vector>(input_ptr, output_ptr);
-    auto& sorted_data = (output_ptr == temporal_storage.data()) ? temporal_storage : input;
+    auto chunk = DataChunk{input.data(), temporal_storage.data(), BLOCK_SIZE};
+    simd_sort_chunk<count_per_vector>(chunk);
+    auto& sorted_data = (chunk.output == temporal_storage.data()) ? temporal_storage : input;
+
     EXPECT_TRUE(std::ranges::is_sorted(sorted_data));
     EXPECT_EQ(sorted_data, expected_output);
   };
@@ -54,10 +54,10 @@ TYPED_TEST(SimdLocalSortTest, SortIncompleteBlock) {
     std::ranges::sort(expected_output);
     EXPECT_TRUE(std::ranges::is_sorted(expected_output));
 
-    auto* input_ptr = input.data();
-    auto* output_ptr = temporal_storage.data();
-    simd_sort_incomplete_block<count_per_vector>(input_ptr, output_ptr, num_items);
-    auto& sorted_data = (output_ptr == temporal_storage.data()) ? temporal_storage : input;
+    auto chunk = DataChunk{input.data(), temporal_storage.data(), num_items};
+    simd_sort_incomplete_chunk<count_per_vector>(chunk);
+    auto& sorted_data = (chunk.output == temporal_storage.data()) ? temporal_storage : input;
+
     EXPECT_TRUE(std::ranges::is_sorted(sorted_data));
     EXPECT_EQ(sorted_data, expected_output);
   };
