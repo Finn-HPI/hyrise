@@ -135,6 +135,7 @@ class AbstractTwoWayMerge {
     upper_merge_output.store(reinterpret_cast<T*>(output_pointer));
   }
 
+  // Hint: this function has sideeffects on the input of a and b.
   template <std::size_t kernel_size>
   static inline void __attribute__((always_inline))
   merge_variable_length(T* a_address, T* b_address, T* output_address, const std::size_t a_length,

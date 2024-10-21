@@ -82,8 +82,8 @@ inline void __attribute__((always_inline)) simd_sort_chunk(DataChunk<T>& block) 
 }
 
 template <std::size_t count_per_register, typename T>
-inline std::size_t __attribute__((always_inline)) simd_merge_chunk_list(std::vector<DataChunk<T>>& chunk_list,
-                                                                        std::size_t chunk_count) {
+inline std::size_t __attribute__((always_inline))
+simd_merge_chunk_list(std::vector<DataChunk<T>>& chunk_list, std::size_t chunk_count) {
   using TwoWayMerge = TwoWayMerge<count_per_register, T>;
   auto updated_chunk_count = std::size_t{0};
   const auto last_chunk_index = chunk_count - 1;
