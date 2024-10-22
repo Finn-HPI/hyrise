@@ -8,7 +8,7 @@
 
 namespace hyrise::simd_sort {
 
-using data_type_list = testing::Types<double, int64_t, uint64_t>;
+using data_type_list = testing::Types<float, int, uint32_t, double, int64_t, uint64_t>;
 
 template <class>
 class SimdUtilsTest : public BaseTest {};
@@ -100,8 +100,8 @@ TYPED_TEST(SimdUtilsTest, SortBlockSize) {
 }
 
 TYPED_TEST(SimdUtilsTest, MultiVec) {
-  using Vec2 = Vec<16, TypeParam>;  // Vector of 2 64-bit elements.
-  using Vec4 = Vec<32, TypeParam>;  // Vector of 4 64-bit elements.
+  using Vec2 = Vec<2 * sizeof(TypeParam), TypeParam>;  // Vector of 2 64-bit elements.
+  using Vec4 = Vec<4 * sizeof(TypeParam), TypeParam>;  // Vector of 4 64-bit elements.
 
   auto input = simd_vector<TypeParam>{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
   auto output2 = simd_vector<TypeParam>(2);

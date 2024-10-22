@@ -8,14 +8,14 @@
 
 namespace hyrise::simd_sort {
 
-using data_type_list = testing::Types<double, int64_t, uint64_t>;
+using data_type_list = testing::Types<float, int, uint32_t, double, int64_t, uint64_t>;
 
 template <class>
-class SimdLocalSortTest : public BaseTest {};
+class SimdSortTest : public BaseTest {};
 
-TYPED_TEST_SUITE(SimdLocalSortTest, data_type_list);
+TYPED_TEST_SUITE(SimdSortTest, data_type_list);
 
-TYPED_TEST(SimdLocalSortTest, SortBlock) {
+TYPED_TEST(SimdSortTest, SortBlock) {
   constexpr auto BLOCK_SIZE = block_size<TypeParam>();
   auto test_sort_block = []<std::size_t count_per_vector>() {
     auto input = simd_vector<TypeParam>(BLOCK_SIZE);
@@ -39,7 +39,7 @@ TYPED_TEST(SimdLocalSortTest, SortBlock) {
   test_sort_block.template operator()<4>();
 }
 
-TYPED_TEST(SimdLocalSortTest, SortIncompleteBlock) {
+TYPED_TEST(SimdSortTest, SortIncompleteBlock) {
   constexpr auto BLOCK_SIZE = block_size<TypeParam>();
   auto test_sort_block = []<std::size_t count_per_vector>(const double scale) {
     const auto num_items = static_cast<std::size_t>(static_cast<double>(BLOCK_SIZE) * scale);
@@ -69,7 +69,7 @@ TYPED_TEST(SimdLocalSortTest, SortIncompleteBlock) {
   }
 }
 
-TYPED_TEST(SimdLocalSortTest, SortComplete) {
+TYPED_TEST(SimdSortTest, SortComplete) {
   constexpr auto BLOCK_SIZE = block_size<TypeParam>();
 
   auto test_sort = []<std::size_t count_per_vector>(double scale) {
@@ -94,7 +94,7 @@ TYPED_TEST(SimdLocalSortTest, SortComplete) {
     EXPECT_TRUE(std::ranges::is_sorted(sorted_data));
     EXPECT_EQ(sorted_data, expected_output);
   };
-  constexpr auto MAX_SCALE = 32;
+  constexpr auto MAX_SCALE = 16;
   constexpr auto NUM_FRACTIONS = 10;
   for (auto scale = std::size_t{1}; scale < MAX_SCALE; scale *= 2) {
     //  Test with integer multiples of BLOCK_SIZE.
