@@ -7,7 +7,6 @@ namespace hyrise {
 
 constexpr auto MERGE_AB = 2;
 constexpr auto MERGE_2AB = 4;
-
 constexpr auto MERGE_4AB = 8;
 
 template <std::size_t count_per_register, typename T, typename Derived>
@@ -217,18 +216,11 @@ class AbstractTwoWayMerge {
       a_address += cmp;
       b_address += cmp_neg;
     }
-    while (a_index < a_length) {
-      *out = *a_address;
-      ++a_index;
-      out++;
-      ++a_address;
-    }
-    while (b_index < b_length) {
-      *out = *b_address;
-      ++b_index;
-      out++;
-      ++b_address;
-    }
+    const auto a_copy_length = a_length - a_index;
+    simd_copy<count_per_register>(out, a_address, a_copy_length);
+    out += a_copy_length;
+    const auto b_copy_length = b_length - b_index;
+    simd_copy<count_per_register>(out, b_address, b_copy_length);
   }
 };
 }  // namespace hyrise

@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <cstring>
 #include <vector>
 
 #include "base_test.hpp"
@@ -75,6 +76,23 @@ TYPED_TEST(SimdUtilsTest, LoadAndStoreUnaligned) {
     store_unaligned<Vec>(sum_vec, output.data());
     EXPECT_EQ(output, result);
   }
+}
+
+TYPED_TEST(SimdUtilsTest, SimdCopy) {
+  const auto test_copy = []<std::size_t count_per_vector>() {
+    for (auto size = std::size_t{1}; size <= 256; ++size) {
+      auto input = simd_vector<TypeParam>(size);
+      std::iota(input.begin(), input.end(), 0);
+      auto output = simd_vector<TypeParam>(size);
+      simd_copy<count_per_vector>(output.data(), input.data(), size);
+      EXPECT_EQ(input.size(), output.size());
+      for (auto index = std::size_t{0}; index < size; ++index) {
+        EXPECT_EQ(input[index], output[index]);
+      }
+    }
+  };
+  test_copy.template operator()<2>();
+  test_copy.template operator()<4>();
 }
 
 TYPED_TEST(SimdUtilsTest, SortBlockSize) {

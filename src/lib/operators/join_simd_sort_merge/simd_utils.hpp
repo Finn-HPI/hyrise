@@ -266,4 +266,30 @@ constexpr std::size_t get_alignment_bitmask() {
   return ~(kernel_size - 1);
 }
 
+template <std::size_t count_per_vector, typename T>
+inline void __attribute__((always_inline)) simd_copy(T* dest, T* src, std::size_t size) {
+  if (size == 0) {
+    return;
+  }
+  using VecType = Vec<count_per_vector * sizeof(T), T>;
+
+  auto simd_copy_size = size & ~(count_per_vector - 1);
+  size -= simd_copy_size;
+
+  while (simd_copy_size) {
+    auto vec = load_unaligned<VecType>(src);
+    store_unaligned<VecType>(vec, dest);
+    simd_copy_size -= count_per_vector;
+    src += count_per_vector;
+    dest += count_per_vector;
+  }
+
+  while (size) {
+    *dest = *src;
+    ++dest;
+    ++src;
+    --size;
+  }
+}
+
 };  // namespace hyrise
