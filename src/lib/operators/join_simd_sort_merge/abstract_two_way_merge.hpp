@@ -9,10 +9,10 @@ constexpr auto MERGE_AB = 2;
 constexpr auto MERGE_2AB = 4;
 constexpr auto MERGE_4AB = 8;
 
-template <std::size_t count_per_register, typename T, typename Derived>
+template <std::size_t count_per_vector, typename T, typename Derived>
 class AbstractTwoWayMerge {
-  static constexpr auto REGISTER_SIZE = count_per_register * sizeof(T);
-  using VecType = Vec<REGISTER_SIZE, T>;
+  static constexpr auto VECTOR_SIZE = count_per_vector * sizeof(T);
+  using VecType = Vec<VECTOR_SIZE, T>;
 
  public:
   template <std::size_t input_count, typename MulitVecType>
@@ -77,10 +77,10 @@ class AbstractTwoWayMerge {
   merge_equal_length(T* const a_address, T* const b_address, T* const output_address, const std::size_t length) {
     using block_t = struct alignas(kernel_size * sizeof(T)) {};
 
-    static constexpr auto REGISTER_COUNT = kernel_size / count_per_register;
-    static constexpr auto MERGE_NETWORK_INPUT_SIZE = REGISTER_COUNT * 2;
+    static constexpr auto VECTOR_COUNT = kernel_size / count_per_vector;
+    static constexpr auto MERGE_NETWORK_INPUT_SIZE = VECTOR_COUNT * 2;
 
-    using MultiVecType = MultiVec<REGISTER_COUNT, count_per_register, VecType>;
+    using MultiVecType = MultiVec<VECTOR_COUNT, count_per_vector, VecType>;
     using BitonicMergeNetwork = BitonicMergeNetwork<MERGE_NETWORK_INPUT_SIZE, MultiVecType>;
 
     auto* a_pointer = reinterpret_cast<block_t*>(a_address);
@@ -141,10 +141,10 @@ class AbstractTwoWayMerge {
                         const std::size_t b_length) {
     using block_t = struct alignas(kernel_size * sizeof(T)) {};
 
-    static constexpr auto REGISTER_COUNT = kernel_size / count_per_register;
-    static constexpr auto MERGE_NETWORK_INPUT_SIZE = REGISTER_COUNT * 2;
+    static constexpr auto VECTOR_COUNT = kernel_size / count_per_vector;
+    static constexpr auto MERGE_NETWORK_INPUT_SIZE = VECTOR_COUNT * 2;
 
-    using MultiVecType = MultiVec<REGISTER_COUNT, count_per_register, VecType>;
+    using MultiVecType = MultiVec<VECTOR_COUNT, count_per_vector, VecType>;
     using BitonicMergeNetwork = BitonicMergeNetwork<MERGE_NETWORK_INPUT_SIZE, MultiVecType>;
     constexpr auto ALIGNMENT_BIT_MASK = get_alignment_bitmask<kernel_size>();
 
@@ -188,7 +188,7 @@ class AbstractTwoWayMerge {
         ++output_pointer;
       }
 
-      const auto last_element_from_merge_output = upper_merge_output.last()[count_per_register - 1];
+      const auto last_element_from_merge_output = upper_merge_output.last()[count_per_vector - 1];
       if (last_element_from_merge_output <= *reinterpret_cast<T*>(a_pointer)) {
         --a_pointer;
         upper_merge_output.store(reinterpret_cast<T*>(a_pointer));
@@ -217,10 +217,10 @@ class AbstractTwoWayMerge {
       b_address += cmp_neg;
     }
     const auto a_copy_length = a_length - a_index;
-    simd_copy<count_per_register>(out, a_address, a_copy_length);
+    simd_copy<count_per_vector>(out, a_address, a_copy_length);
     out += a_copy_length;
     const auto b_copy_length = b_length - b_index;
-    simd_copy<count_per_register>(out, b_address, b_copy_length);
+    simd_copy<count_per_vector>(out, b_address, b_copy_length);
   }
 };
 }  // namespace hyrise

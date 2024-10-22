@@ -32,7 +32,7 @@ constexpr std::size_t block_size() {
 template <std::size_t reg_size, typename T>
 using Vec __attribute__((vector_size(reg_size))) = T;
 
-// Loading and Storing SIMD registers.
+// Loading and Storing SIMD vectors.
 
 template <typename VecType, typename T>
 inline __attribute((always_inline)) VecType load_aligned(T* addr) {
@@ -174,12 +174,12 @@ static inline void __attribute__((always_inline)) compare_min_max(VecType& input
 template <typename T>
 struct SortingNetwork<2, T> {
   static inline void __attribute__((always_inline)) sort(T* data, T* output) {
-    constexpr auto COUNT_PER_REGISTER = 2;
-    constexpr auto REGISTER_SIZE = COUNT_PER_REGISTER * sizeof(T);
-    using VecType = Vec<REGISTER_SIZE, T>;
+    constexpr auto COUNT_PER_VECTOR = 2;
+    constexpr auto VECTOR_SIZE = COUNT_PER_VECTOR * sizeof(T);
+    using VecType = Vec<VECTOR_SIZE, T>;
 
     auto row_0 = load_aligned<VecType>(data);
-    auto row_1 = load_aligned<VecType>(data + COUNT_PER_REGISTER);
+    auto row_1 = load_aligned<VecType>(data + COUNT_PER_VECTOR);
 
     // Level 1 comparisons.
     compare_min_max(row_0, row_1);
@@ -189,21 +189,21 @@ struct SortingNetwork<2, T> {
     auto out_2 = __builtin_shufflevector(row_0, row_1, 1, 3);
     // Write to output
     store_aligned(out_1, output);
-    store_aligned(out_2, output + COUNT_PER_REGISTER);
+    store_aligned(out_2, output + COUNT_PER_VECTOR);
   }
 };
 
 template <typename T>
 struct SortingNetwork<4, T> {
   static inline void __attribute__((always_inline)) sort(T* data, T* output) {
-    constexpr auto COUNT_PER_REGISTER = 4;
-    constexpr auto REGISTER_SIZE = COUNT_PER_REGISTER * sizeof(T);
-    using VecType = Vec<REGISTER_SIZE, T>;
+    constexpr auto COUNT_PER_VECTOR = 4;
+    constexpr auto VECTOR_SIZE = COUNT_PER_VECTOR * sizeof(T);
+    using VecType = Vec<VECTOR_SIZE, T>;
 
     auto row_0 = load_aligned<VecType>(data);
-    auto row_1 = load_aligned<VecType>(data + COUNT_PER_REGISTER);
-    auto row_2 = load_aligned<VecType>(data + 2 * COUNT_PER_REGISTER);
-    auto row_3 = load_aligned<VecType>(data + 3 * COUNT_PER_REGISTER);
+    auto row_1 = load_aligned<VecType>(data + COUNT_PER_VECTOR);
+    auto row_2 = load_aligned<VecType>(data + 2 * COUNT_PER_VECTOR);
+    auto row_3 = load_aligned<VecType>(data + 3 * COUNT_PER_VECTOR);
 
     // Level 1 comparisons.
     compare_min_max(row_0, row_2);
@@ -226,9 +226,9 @@ struct SortingNetwork<4, T> {
 
     // Write to output
     store_aligned(row_0, output);
-    store_aligned(row_1, output + COUNT_PER_REGISTER);
-    store_aligned(row_2, output + 2 * COUNT_PER_REGISTER);
-    store_aligned(row_3, output + 3 * COUNT_PER_REGISTER);
+    store_aligned(row_1, output + COUNT_PER_VECTOR);
+    store_aligned(row_2, output + 2 * COUNT_PER_VECTOR);
+    store_aligned(row_3, output + 3 * COUNT_PER_VECTOR);
   }
 };
 

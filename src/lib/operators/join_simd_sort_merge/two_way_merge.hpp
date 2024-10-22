@@ -5,9 +5,9 @@
 
 namespace hyrise {
 
-template <std::size_t count_per_register, typename T>
-class TwoWayMerge : public AbstractTwoWayMerge<count_per_register, T, TwoWayMerge<count_per_register, T>> {
-  TwoWayMerge() : AbstractTwoWayMerge<count_per_register, T, TwoWayMerge<count_per_register, T>>() {
+template <std::size_t count_per_vector, typename T>
+class TwoWayMerge : public AbstractTwoWayMerge<count_per_vector, T, TwoWayMerge<count_per_vector, T>> {
+  TwoWayMerge() : AbstractTwoWayMerge<count_per_vector, T, TwoWayMerge<count_per_vector, T>>() {
     static_assert(false, "Not implemented.");
   }
 };
@@ -16,9 +16,9 @@ class TwoWayMerge : public AbstractTwoWayMerge<count_per_register, T, TwoWayMerg
 
 template <typename T>
 class TwoWayMerge<2, T> : public AbstractTwoWayMerge<2, T, TwoWayMerge<2, T>> {
-  static constexpr auto COUNT_PER_REGISTER = 2;
-  static constexpr auto REGISTER_SIZE = COUNT_PER_REGISTER * sizeof(T);
-  using VecType = Vec<REGISTER_SIZE, T>;
+  static constexpr auto COUNT_PER_VECTOR = 2;
+  static constexpr auto VECTOR_SIZE = COUNT_PER_VECTOR * sizeof(T);
+  using VecType = Vec<VECTOR_SIZE, T>;
 
  public:
   static inline void __attribute__((always_inline)) reverse(VecType& vec) {
@@ -53,9 +53,9 @@ class TwoWayMerge<2, T> : public AbstractTwoWayMerge<2, T, TwoWayMerge<2, T>> {
 
 template <typename T>
 class TwoWayMerge<4, T> : public AbstractTwoWayMerge<4, T, TwoWayMerge<4, T>> {
-  static constexpr auto COUNT_PER_REGISTER = 4;
-  static constexpr auto REGISTER_SIZE = COUNT_PER_REGISTER * sizeof(T);
-  using VecType = Vec<REGISTER_SIZE, T>;
+  static constexpr auto COUNT_PER_VECTOR = 4;
+  static constexpr auto VECTOR_SIZE = COUNT_PER_VECTOR * sizeof(T);
+  using VecType = Vec<VECTOR_SIZE, T>;
 
  public:
   static inline void __attribute__((always_inline)) reverse(VecType& vec) {
