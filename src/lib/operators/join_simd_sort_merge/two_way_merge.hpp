@@ -3,7 +3,7 @@
 #include "abstract_two_way_merge.hpp"
 #include "simd_utils.hpp"
 
-namespace hyrise {
+namespace hyrise::simd_sort {
 
 template <std::size_t count_per_vector, typename T>
 class TwoWayMerge : public AbstractTwoWayMerge<count_per_vector, T, TwoWayMerge<count_per_vector, T>> {
@@ -97,4 +97,4 @@ class TwoWayMerge<4, T> : public AbstractTwoWayMerge<4, T, TwoWayMerge<4, T>> {
 };
 
 // NOLINTEND(cppcoreguidelines-pro-type-vararg, hicpp-vararg)
-}  // namespace hyrise
+}  // namespace hyrise::simd_sort

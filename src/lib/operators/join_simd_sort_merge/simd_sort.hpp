@@ -11,7 +11,7 @@
 #include "simd_utils.hpp"
 #include "two_way_merge.hpp"
 
-namespace hyrise {
+namespace hyrise::simd_sort {
 
 template <typename T>
 struct DataChunk {
@@ -198,4 +198,4 @@ void simd_sort(T*& input_ptr, T*& output_ptr, std::size_t element_count) {
   output_ptr = merged_chunk.input;
   input_ptr = merged_chunk.output;
 }
-}  // namespace hyrise
+}  // namespace hyrise::simd_sort

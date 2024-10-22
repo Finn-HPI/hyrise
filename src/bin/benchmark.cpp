@@ -8,7 +8,7 @@
 
 #include "cxxopts.hpp"
 
-#include "operators/join_simd_sort_merge/simd_local_sort.hpp"
+#include "operators/join_simd_sort_merge/simd_sort.hpp"
 
 template <typename T>
 auto get_uniform_distribution(T min, T max) {
@@ -21,13 +21,16 @@ auto get_uniform_distribution(T min, T max) {
   }
 }
 
-template <std::size_t count_per_register, typename KeyType>
+template <std::size_t count_per_vector, typename KeyType>
 void benchmark(const std::size_t scale, const std::size_t num_warumup_runs, const std::size_t num_runs,
                std::ofstream& out) {
   using std::chrono::duration;
   using std::chrono::duration_cast;
   using std::chrono::high_resolution_clock;
   using std::chrono::milliseconds;
+
+  using hyrise::simd_sort::simd_sort;
+  using hyrise::simd_sort::simd_vector;
 
   std::cout << "Running benchmark for scale: " << scale << " ..." << std::endl;
 
@@ -40,7 +43,6 @@ void benchmark(const std::size_t scale, const std::size_t num_warumup_runs, cons
 
   std::cout << "num_items: " << num_items << std::endl;
 
-  using hyrise::simd_vector;
   auto data = simd_vector<KeyType>(num_items);
   auto data_std_sort = simd_vector<KeyType>(num_items);
   auto data_simd_sort = simd_vector<KeyType>(num_items);
@@ -106,7 +108,7 @@ void benchmark(const std::size_t scale, const std::size_t num_warumup_runs, cons
     //////////////////////////////
 
     auto start_simd_sort = std::chrono::steady_clock::now();
-    hyrise::simd_sort<count_per_register>(input_ptr, output_ptr, num_items);
+    simd_sort<count_per_vector>(input_ptr, output_ptr, num_items);
     auto end_simd_sort = std::chrono::steady_clock::now();
 
     /////////////////////////////
@@ -143,7 +145,7 @@ int main(int argc, char* argv[]) {
   cxxopts::Options options("SIMDSort", "A single-threaded simd_sort benchmark.");
   // clang-format off
   options.add_options()
-  ("c,cpr", "element count per simd register", cxxopts::value<std::size_t>()->default_value("4"))
+  ("c,cpr", "element count per simd vector", cxxopts::value<std::size_t>()->default_value("4"))
   ("t,dt", "element data type", cxxopts::value<std::string>()->default_value("double"))
   ("w,warmup", "number of warmup runs", cxxopts::value<std::size_t>()->default_value("1"))
   ("r,runs", "number of runs", cxxopts::value<std::size_t>()->default_value("5"))
@@ -155,9 +157,9 @@ int main(int argc, char* argv[]) {
     std::cout << options.help() << std::endl;
     return 0;
   }
-  const auto count_per_register = result["cpr"].as<std::size_t>();  // 64-bit elements with AVX2.
+  const auto count_per_vector = result["cpr"].as<std::size_t>();  // 64-bit elements with AVX2.
   const auto output_path = result["output"].as<std::string>();
-  std::cout << "[Configuration] cpr: " << count_per_register << std::endl;
+  std::cout << "[Configuration] cpr: " << count_per_vector << std::endl;
   std::cout << "L2_CACHE_SIZE: " << L2_CACHE_SIZE << std::endl;
 
   auto output_file = std::ofstream(output_path);
@@ -169,7 +171,7 @@ int main(int argc, char* argv[]) {
   const auto num_warumup_runs = result["warmup"].as<std::size_t>();
   const auto num_runs = result["runs"].as<std::size_t>();
 
-  if (count_per_register == 4) {
+  if (count_per_vector == 4) {
     if (key_type == "double") {
       for (auto scale = std::size_t{1}; scale <= 256; scale *= 2) {
         benchmark<4, double>(scale, num_warumup_runs, num_runs, output_file);
@@ -179,7 +181,7 @@ int main(int argc, char* argv[]) {
         benchmark<4, int64_t>(scale, num_warumup_runs, num_runs, output_file);
       }
     }
-  } else if (count_per_register == 2) {
+  } else if (count_per_vector == 2) {
     if (key_type == "double") {
       for (auto scale = std::size_t{1}; scale <= 256; scale *= 2) {
         benchmark<2, double>(scale, num_warumup_runs, num_runs, output_file);

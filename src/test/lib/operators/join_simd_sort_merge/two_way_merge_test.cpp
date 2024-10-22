@@ -4,10 +4,9 @@
 #include <numeric>
 
 #include "base_test.hpp"
-#include "operators/join_simd_sort_merge/simd_utils.hpp"
 #include "operators/join_simd_sort_merge/two_way_merge.hpp"
 
-namespace hyrise {
+namespace hyrise::simd_sort {
 
 using data_type_list = testing::Types<double, int64_t, uint64_t>;
 
@@ -316,4 +315,4 @@ TYPED_TEST(SimdTwoWayMergeTest, MergeVariableLength) {
   test_merge_var_length.template operator()<4>();
 }
 
-}  // namespace hyrise
+}  // namespace hyrise::simd_sort

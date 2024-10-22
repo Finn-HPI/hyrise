@@ -6,7 +6,7 @@
 #include "base_test.hpp"
 #include "operators/join_simd_sort_merge/simd_utils.hpp"
 
-namespace hyrise {
+namespace hyrise::simd_sort {
 
 using data_type_list = testing::Types<double, int64_t, uint64_t>;
 
@@ -281,4 +281,4 @@ TYPED_TEST(SimdUtilsTest, SortingNetwork) {
   }
 }
 
-}  // namespace hyrise
+}  // namespace hyrise::simd_sort

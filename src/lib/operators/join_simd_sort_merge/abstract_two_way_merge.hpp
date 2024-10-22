@@ -3,7 +3,7 @@
 
 #include "simd_utils.hpp"
 
-namespace hyrise {
+namespace hyrise::simd_sort {
 
 constexpr auto MERGE_AB = 2;
 constexpr auto MERGE_2AB = 4;
@@ -223,4 +223,4 @@ class AbstractTwoWayMerge {
     simd_copy<count_per_vector>(out, b_address, b_copy_length);
   }
 };
-}  // namespace hyrise
+}  // namespace hyrise::simd_sort

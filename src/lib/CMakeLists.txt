@@ -226,7 +226,7 @@ set(
     operators/join_simd_sort_merge/simd_utils.hpp
     operators/join_simd_sort_merge/abstract_two_way_merge.hpp
     operators/join_simd_sort_merge/two_way_merge.hpp
-    operators/join_simd_sort_merge/simd_local_sort.hpp
+    operators/join_simd_sort_merge/simd_sort.hpp
     operators/join_verification.cpp
     operators/join_verification.hpp
     operators/limit.cpp

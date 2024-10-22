@@ -16,7 +16,7 @@
 #define INTERLEAVE_LOWERS 0, 4, 1, 5
 #define INTERLEAVE_UPPERS 2, 6, 3, 7
 
-namespace hyrise {
+namespace hyrise::simd_sort {
 
 template <class T, std::size_t alignment = 1>
 using aligned_vector = std::vector<T, boost::alignment::aligned_allocator<T, alignment>>;
@@ -292,4 +292,4 @@ inline void __attribute__((always_inline)) simd_copy(T* dest, T* src, std::size_
   }
 }
 
-};  // namespace hyrise
+};  // namespace hyrise::simd_sort
