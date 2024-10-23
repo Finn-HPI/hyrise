@@ -170,10 +170,10 @@ TYPED_TEST(SimdTwoWayMergeTest, MergeNetwokInputSize4) {
     // clang-format off
     // The input is split into a smaller and a bigger half.
     auto data = simd_vector<TypeParam>{
-      1, 2, 3, 4,5,6,7,8,   // sorted ascending
-      8,7,6,5,4, 3, 2, 1,   // sorted descending
-      8,8,16,17,18,19,20,21,  // sorted ascending
-      32,21,20,16,15,14,9,8    // sorted descending
+      1, 2, 3, 4, 5, 6, 7, 8,   // sorted ascending
+      8, 7, 6, 5, 4, 3, 2, 1,   // sorted descending
+      8, 8, 16, 17, 18, 19, 20, 21,  // sorted ascending
+      32, 21, 20, 16, 15, 14, 9, 8    // sorted descending
     };
     // clang-format on
     test.template operator()<TwoWayMergeT, MultiVec>(data);
