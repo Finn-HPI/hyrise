@@ -48,6 +48,7 @@ TYPED_TEST(SimdUtilsTest, LoadAndStoreAligned) {
     store_aligned<Vec>(sum_vec, output.data());
     EXPECT_EQ(output, result);
   }
+#ifdef __AVX512F__
   {
     constexpr auto COUNT_PER_VECTOR = 8;
     using Vec = Vec<COUNT_PER_VECTOR * sizeof(TypeParam), TypeParam>;  // Vector of 4 64-bit elements.
@@ -60,6 +61,7 @@ TYPED_TEST(SimdUtilsTest, LoadAndStoreAligned) {
     store_aligned<Vec>(sum_vec, output.data());
     EXPECT_EQ(output, result);
   }
+#endif
 }
 
 TYPED_TEST(SimdUtilsTest, LoadAndStoreUnaligned) {
@@ -88,6 +90,7 @@ TYPED_TEST(SimdUtilsTest, LoadAndStoreUnaligned) {
     store_unaligned<Vec>(sum_vec, output.data());
     EXPECT_EQ(output, result);
   }
+#ifdef __AVX512F__
   {
     constexpr auto COUNT_PER_VECTOR = 8;
     using Vec = Vec<COUNT_PER_VECTOR * sizeof(TypeParam), TypeParam>;  // Vector of 4 64-bit elements.
@@ -100,6 +103,7 @@ TYPED_TEST(SimdUtilsTest, LoadAndStoreUnaligned) {
     store_unaligned<Vec>(sum_vec, output.data());
     EXPECT_EQ(output, result);
   }
+#endif
 }
 
 TYPED_TEST(SimdUtilsTest, SimdCopy) {
@@ -117,6 +121,9 @@ TYPED_TEST(SimdUtilsTest, SimdCopy) {
   };
   test_copy.template operator()<2>();
   test_copy.template operator()<4>();
+#ifdef __AVX512F__
+  test_copy.template operator()<8>();
+#endif
 }
 
 TYPED_TEST(SimdUtilsTest, SortBlockSize) {
@@ -126,7 +133,6 @@ TYPED_TEST(SimdUtilsTest, SortBlockSize) {
 TYPED_TEST(SimdUtilsTest, MultiVec) {
   using Vec2 = Vec<2 * sizeof(TypeParam), TypeParam>;  // Vector of 2 64-bit elements.
   using Vec4 = Vec<4 * sizeof(TypeParam), TypeParam>;  // Vector of 4 64-bit elements.
-  using Vec8 = Vec<8 * sizeof(TypeParam), TypeParam>;  // Vector of 8 64-bit elements.
 
   auto input = simd_vector<TypeParam>{1,  2,  3,  4,  5,  6,  7,  8,  9,  10, 11, 12, 13, 14, 15, 16,
                                       17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32};
@@ -142,17 +148,13 @@ TYPED_TEST(SimdUtilsTest, MultiVec) {
   auto result2x4 = simd_vector<TypeParam>{1, 2, 3, 4, 5, 6, 7, 8};
   auto result4x2 = simd_vector<TypeParam>{1, 2, 3, 4, 5, 6, 7, 8};
   auto result4x4 = simd_vector<TypeParam>{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
-  auto result4x8 = input;
 
   using SingleMultiVec2 = MultiVec<1, 2, Vec2>;
   using SingleMultiVec4 = MultiVec<1, 4, Vec4>;
-  using SingleMultiVec8 = MultiVec<1, 8, Vec8>;
   using DoubleMultiVec2 = MultiVec<2, 2, Vec2>;
   using DoubleMultiVec4 = MultiVec<2, 4, Vec4>;
-  using DoubleMultiVec8 = MultiVec<2, 8, Vec8>;
   using QuadMultiVec2 = MultiVec<4, 2, Vec2>;
   using QuadMultiVec4 = MultiVec<4, 4, Vec4>;
-  using QuadMultiVec8 = MultiVec<4, 8, Vec8>;
 
   {
     auto multi_vec = SingleMultiVec2{};
@@ -171,14 +173,6 @@ TYPED_TEST(SimdUtilsTest, MultiVec) {
     EXPECT_EQ(output4, result1x4);
   }
   {
-    auto multi_vec = SingleMultiVec8{};
-    multi_vec.load(input.data());
-    EXPECT_EQ(multi_vec.first()[0], 1);
-    EXPECT_EQ(multi_vec.last()[0], 1);
-    multi_vec.store(output8.data());
-    EXPECT_EQ(output8, result2x4);
-  }
-  {
     auto multi_vec = DoubleMultiVec2{};
     multi_vec.load(input.data());
     EXPECT_EQ(multi_vec.first()[0], 1);
@@ -193,14 +187,6 @@ TYPED_TEST(SimdUtilsTest, MultiVec) {
     EXPECT_EQ(multi_vec.last()[0], 5);
     multi_vec.store(output8.data());
     EXPECT_EQ(output8, result2x4);
-  }
-  {
-    auto multi_vec = DoubleMultiVec8{};
-    multi_vec.load(input.data());
-    EXPECT_EQ(multi_vec.first()[0], 1);
-    EXPECT_EQ(multi_vec.last()[0], 9);
-    multi_vec.store(output16.data());
-    EXPECT_EQ(output16, result4x4);
   }
   {
     auto multi_vec = QuadMultiVec2{};
@@ -218,6 +204,29 @@ TYPED_TEST(SimdUtilsTest, MultiVec) {
     multi_vec.store(output16.data());
     EXPECT_EQ(output16, result4x4);
   }
+#ifdef __AVX512F__
+  using Vec8 = Vec<8 * sizeof(TypeParam), TypeParam>;  // Vector of 8 64-bit elements.
+  using SingleMultiVec8 = MultiVec<1, 8, Vec8>;
+  using DoubleMultiVec8 = MultiVec<2, 8, Vec8>;
+  using QuadMultiVec8 = MultiVec<4, 8, Vec8>;
+  auto result4x8 = input;
+  {
+    auto multi_vec = SingleMultiVec8{};
+    multi_vec.load(input.data());
+    EXPECT_EQ(multi_vec.first()[0], 1);
+    EXPECT_EQ(multi_vec.last()[0], 1);
+    multi_vec.store(output8.data());
+    EXPECT_EQ(output8, result2x4);
+  }
+
+  {
+    auto multi_vec = DoubleMultiVec8{};
+    multi_vec.load(input.data());
+    EXPECT_EQ(multi_vec.first()[0], 1);
+    EXPECT_EQ(multi_vec.last()[0], 9);
+    multi_vec.store(output16.data());
+    EXPECT_EQ(output16, result4x4);
+  }
   {
     auto multi_vec = QuadMultiVec8{};
     multi_vec.load(input.data());
@@ -226,6 +235,8 @@ TYPED_TEST(SimdUtilsTest, MultiVec) {
     multi_vec.store(output32.data());
     EXPECT_EQ(output32, result4x8);
   }
+
+#endif
 }
 
 TYPED_TEST(SimdUtilsTest, ChooseNextAndUpdatePointers) {
@@ -334,6 +345,7 @@ TYPED_TEST(SimdUtilsTest, SortingNetwork) {
     SortingNetwork<4, TypeParam>::sort(input.data(), output.data());
     EXPECT_EQ(output, result);
   }
+#ifdef __AVX512F__
   // Tests for 8x8 sorting network.
   {
     // clang-format off
@@ -367,6 +379,7 @@ TYPED_TEST(SimdUtilsTest, SortingNetwork) {
     SortingNetwork<8, TypeParam>::sort(input.data(), output.data());
     EXPECT_EQ(output, result);
   }
+#endif
 }
 
 }  // namespace hyrise::simd_sort

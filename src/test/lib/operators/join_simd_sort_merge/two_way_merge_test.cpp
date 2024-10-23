@@ -40,6 +40,7 @@ TYPED_TEST(SimdTwoWayMergeTest, Reverse) {
     EXPECT_EQ(vec[2], 3);
     EXPECT_EQ(vec[3], 4);
   }
+#ifdef __AVX512F__
   {
     constexpr auto COUNT_PER_VECTOR = 8;
     using Vec = Vec<COUNT_PER_VECTOR * sizeof(TypeParam), TypeParam>;
@@ -57,6 +58,8 @@ TYPED_TEST(SimdTwoWayMergeTest, Reverse) {
     EXPECT_EQ(vec[6], 7);
     EXPECT_EQ(vec[7], 8);
   }
+
+#endif
 }
 
 TYPED_TEST(SimdTwoWayMergeTest, MergeNetwokInputSize2) {
@@ -94,6 +97,7 @@ TYPED_TEST(SimdTwoWayMergeTest, MergeNetwokInputSize2) {
     auto data = simd_vector<TypeParam>{1, 4, 6, 7, 5, 4, 3, 2};
     test.template operator()<TwoWayMergeT, MultiVec>(data);
   }
+#ifdef __AVX512F__
   {
     constexpr auto COUNT_PER_VECTOR = 8;
     using Vec = Vec<COUNT_PER_VECTOR * sizeof(TypeParam), TypeParam>;
@@ -103,6 +107,7 @@ TYPED_TEST(SimdTwoWayMergeTest, MergeNetwokInputSize2) {
     auto data = simd_vector<TypeParam>{1, 2, 3, 4, 5, 6, 7, 8, 9, 8, 6, 4, 4, 3, 2, 1};
     test.template operator()<TwoWayMergeT, MultiVec>(data);
   }
+#endif
 }
 
 TYPED_TEST(SimdTwoWayMergeTest, MergeNetwokInputSize4) {
@@ -156,6 +161,7 @@ TYPED_TEST(SimdTwoWayMergeTest, MergeNetwokInputSize4) {
     // clang-format on
     test.template operator()<TwoWayMergeT, MultiVec>(data);
   }
+#ifdef __AVX512F__
   {
     constexpr auto COUNT_PER_VECTOR = 8;
     using Vec = Vec<COUNT_PER_VECTOR * sizeof(TypeParam), TypeParam>;
@@ -172,6 +178,7 @@ TYPED_TEST(SimdTwoWayMergeTest, MergeNetwokInputSize4) {
     // clang-format on
     test.template operator()<TwoWayMergeT, MultiVec>(data);
   }
+#endif
 }
 
 template <typename TwoWayMergeT, typename MultiVec, std::size_t merge_input_count, typename T>
@@ -217,6 +224,7 @@ TYPED_TEST(SimdTwoWayMergeTest, BitonicMergeNetworkMergeAB) {
 
     test_bitonic_merge_network<TwoWayMergeT, MultiVec, MERGE_AB>(a_data, b_data, COUNT_PER_VECTOR);
   }
+#ifdef __AVX512F__
   {
     constexpr auto COUNT_PER_VECTOR = 8;
     using Vec = Vec<COUNT_PER_VECTOR * sizeof(TypeParam), TypeParam>;
@@ -228,6 +236,7 @@ TYPED_TEST(SimdTwoWayMergeTest, BitonicMergeNetworkMergeAB) {
 
     test_bitonic_merge_network<TwoWayMergeT, MultiVec, MERGE_AB>(a_data, b_data, COUNT_PER_VECTOR);
   }
+#endif
 }
 
 TYPED_TEST(SimdTwoWayMergeTest, BitonicMergeNetworkMerge2AB) {
@@ -253,6 +262,7 @@ TYPED_TEST(SimdTwoWayMergeTest, BitonicMergeNetworkMerge2AB) {
 
     test_bitonic_merge_network<TwoWayMergeT, MultiVec, MERGE_2AB>(a_data, b_data, 2 * COUNT_PER_VECTOR);
   }
+#ifdef __AVX512F__
   {
     constexpr auto COUNT_PER_VECTOR = 8;
     using Vec = Vec<COUNT_PER_VECTOR * sizeof(TypeParam), TypeParam>;
@@ -264,6 +274,7 @@ TYPED_TEST(SimdTwoWayMergeTest, BitonicMergeNetworkMerge2AB) {
 
     test_bitonic_merge_network<TwoWayMergeT, MultiVec, MERGE_2AB>(a_data, b_data, 2 * COUNT_PER_VECTOR);
   }
+#endif
 }
 
 TYPED_TEST(SimdTwoWayMergeTest, BitonicMergeNetworkMerge4AB) {
@@ -289,6 +300,7 @@ TYPED_TEST(SimdTwoWayMergeTest, BitonicMergeNetworkMerge4AB) {
 
     test_bitonic_merge_network<TwoWayMergeT, MultiVec, MERGE_4AB>(a_data, b_data, 4 * COUNT_PER_VECTOR);
   }
+#ifdef __AVX512F__
   {
     constexpr auto COUNT_PER_VECTOR = 8;
     using Vec = Vec<COUNT_PER_VECTOR * sizeof(TypeParam), TypeParam>;
@@ -302,6 +314,7 @@ TYPED_TEST(SimdTwoWayMergeTest, BitonicMergeNetworkMerge4AB) {
 
     test_bitonic_merge_network<TwoWayMergeT, MultiVec, MERGE_4AB>(a_data, b_data, 4 * COUNT_PER_VECTOR);
   }
+#endif
 }
 
 TYPED_TEST(SimdTwoWayMergeTest, MergeEqLength) {
@@ -342,7 +355,9 @@ TYPED_TEST(SimdTwoWayMergeTest, MergeEqLength) {
   };
   test_merge_eq_length.template operator()<2>();
   test_merge_eq_length.template operator()<4>();
+#ifdef __AVX512F__
   test_merge_eq_length.template operator()<8>();
+#endif
 }
 
 TYPED_TEST(SimdTwoWayMergeTest, MergeVariableLength) {
@@ -391,7 +406,9 @@ TYPED_TEST(SimdTwoWayMergeTest, MergeVariableLength) {
   };
   test_merge_var_length.template operator()<2>();
   test_merge_var_length.template operator()<4>();
+#ifdef __AVX512F__
   test_merge_var_length.template operator()<8>();
+#endif
 }
 
 }  // namespace hyrise::simd_sort
