@@ -48,6 +48,18 @@ TYPED_TEST(SimdUtilsTest, LoadAndStoreAligned) {
     store_aligned<Vec>(sum_vec, output.data());
     EXPECT_EQ(output, result);
   }
+  {
+    constexpr auto COUNT_PER_VECTOR = 8;
+    using Vec = Vec<COUNT_PER_VECTOR * sizeof(TypeParam), TypeParam>;  // Vector of 4 64-bit elements.
+    auto output = simd_vector<TypeParam>(COUNT_PER_VECTOR);
+    const auto result = simd_vector<TypeParam>{1, 2, 3, 4, 5, 6, 7, 8};
+
+    auto vec_a = load_aligned<Vec>(input.data());
+    auto vec_b = load_aligned<Vec>(input.data() + COUNT_PER_VECTOR);
+    auto sum_vec = vec_a + vec_b;
+    store_aligned<Vec>(sum_vec, output.data());
+    EXPECT_EQ(output, result);
+  }
 }
 
 TYPED_TEST(SimdUtilsTest, LoadAndStoreUnaligned) {
