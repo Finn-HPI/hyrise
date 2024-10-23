@@ -40,6 +40,23 @@ TYPED_TEST(SimdTwoWayMergeTest, Reverse) {
     EXPECT_EQ(vec[2], 3);
     EXPECT_EQ(vec[3], 4);
   }
+  {
+    constexpr auto COUNT_PER_VECTOR = 8;
+    using Vec = Vec<COUNT_PER_VECTOR * sizeof(TypeParam), TypeParam>;
+    using TwoWayMergeT = TwoWayMerge<COUNT_PER_VECTOR, TypeParam>;
+
+    auto two_way_merge = TwoWayMergeT{};
+    auto vec = Vec{8, 7, 6, 5, 4, 3, 2, 1};
+    two_way_merge.reverse(vec);
+    EXPECT_EQ(vec[0], 1);
+    EXPECT_EQ(vec[1], 2);
+    EXPECT_EQ(vec[2], 3);
+    EXPECT_EQ(vec[3], 4);
+    EXPECT_EQ(vec[4], 5);
+    EXPECT_EQ(vec[5], 6);
+    EXPECT_EQ(vec[6], 7);
+    EXPECT_EQ(vec[7], 8);
+  }
 }
 
 TYPED_TEST(SimdTwoWayMergeTest, MergeNetwokInputSize2) {
@@ -75,6 +92,15 @@ TYPED_TEST(SimdTwoWayMergeTest, MergeNetwokInputSize2) {
     using TwoWayMergeT = TwoWayMerge<COUNT_PER_VECTOR, TypeParam>;
 
     auto data = simd_vector<TypeParam>{1, 4, 6, 7, 5, 4, 3, 2};
+    test.template operator()<TwoWayMergeT, MultiVec>(data);
+  }
+  {
+    constexpr auto COUNT_PER_VECTOR = 8;
+    using Vec = Vec<COUNT_PER_VECTOR * sizeof(TypeParam), TypeParam>;
+    using MultiVec = MultiVec<2, COUNT_PER_VECTOR, Vec>;
+    using TwoWayMergeT = TwoWayMerge<COUNT_PER_VECTOR, TypeParam>;
+
+    auto data = simd_vector<TypeParam>{1, 2, 3, 4, 5, 6, 7, 8, 9, 8, 6, 4, 4, 3, 2, 1};
     test.template operator()<TwoWayMergeT, MultiVec>(data);
   }
 }
@@ -130,6 +156,22 @@ TYPED_TEST(SimdTwoWayMergeTest, MergeNetwokInputSize4) {
     // clang-format on
     test.template operator()<TwoWayMergeT, MultiVec>(data);
   }
+  {
+    constexpr auto COUNT_PER_VECTOR = 8;
+    using Vec = Vec<COUNT_PER_VECTOR * sizeof(TypeParam), TypeParam>;
+    using MultiVec = MultiVec<INPUT_SIZE, COUNT_PER_VECTOR, Vec>;
+    using TwoWayMergeT = TwoWayMerge<COUNT_PER_VECTOR, TypeParam>;
+    // clang-format off
+    // The input is split into a smaller and a bigger half.
+    auto data = simd_vector<TypeParam>{
+      1, 2, 3, 4,5,6,7,8,   // sorted ascending
+      8,7,6,5,4, 3, 2, 1,   // sorted descending
+      8,8,16,17,18,19,20,21,  // sorted ascending
+      32,21,20,16,15,14,9,8    // sorted descending
+    };
+    // clang-format on
+    test.template operator()<TwoWayMergeT, MultiVec>(data);
+  }
 }
 
 template <typename TwoWayMergeT, typename MultiVec, std::size_t merge_input_count, typename T>
@@ -175,6 +217,17 @@ TYPED_TEST(SimdTwoWayMergeTest, BitonicMergeNetworkMergeAB) {
 
     test_bitonic_merge_network<TwoWayMergeT, MultiVec, MERGE_AB>(a_data, b_data, COUNT_PER_VECTOR);
   }
+  {
+    constexpr auto COUNT_PER_VECTOR = 8;
+    using Vec = Vec<COUNT_PER_VECTOR * sizeof(TypeParam), TypeParam>;
+    using MultiVec = MultiVec<1, COUNT_PER_VECTOR, Vec>;
+    using TwoWayMergeT = TwoWayMerge<COUNT_PER_VECTOR, TypeParam>;
+
+    auto a_data = simd_vector<TypeParam>{1, 3, 5, 6, 8, 9, 10, 12};
+    auto b_data = simd_vector<TypeParam>{2, 3, 4, 7, 8, 10, 11, 13};
+
+    test_bitonic_merge_network<TwoWayMergeT, MultiVec, MERGE_AB>(a_data, b_data, COUNT_PER_VECTOR);
+  }
 }
 
 TYPED_TEST(SimdTwoWayMergeTest, BitonicMergeNetworkMerge2AB) {
@@ -200,6 +253,17 @@ TYPED_TEST(SimdTwoWayMergeTest, BitonicMergeNetworkMerge2AB) {
 
     test_bitonic_merge_network<TwoWayMergeT, MultiVec, MERGE_2AB>(a_data, b_data, 2 * COUNT_PER_VECTOR);
   }
+  {
+    constexpr auto COUNT_PER_VECTOR = 8;
+    using Vec = Vec<COUNT_PER_VECTOR * sizeof(TypeParam), TypeParam>;
+    using MultiVec = MultiVec<2, COUNT_PER_VECTOR, Vec>;
+    using TwoWayMergeT = TwoWayMerge<COUNT_PER_VECTOR, TypeParam>;
+
+    auto a_data = simd_vector<TypeParam>{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
+    auto b_data = simd_vector<TypeParam>{2, 3, 3, 4, 5, 5, 9, 10, 11, 12, 13, 13, 14, 18, 20, 21};
+
+    test_bitonic_merge_network<TwoWayMergeT, MultiVec, MERGE_2AB>(a_data, b_data, 2 * COUNT_PER_VECTOR);
+  }
 }
 
 TYPED_TEST(SimdTwoWayMergeTest, BitonicMergeNetworkMerge4AB) {
@@ -222,6 +286,19 @@ TYPED_TEST(SimdTwoWayMergeTest, BitonicMergeNetworkMerge4AB) {
 
     auto a_data = simd_vector<TypeParam>{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
     auto b_data = simd_vector<TypeParam>{2, 3, 3, 5, 6, 8, 8, 10, 11, 13, 16, 18, 19, 20, 21, 22};
+
+    test_bitonic_merge_network<TwoWayMergeT, MultiVec, MERGE_4AB>(a_data, b_data, 4 * COUNT_PER_VECTOR);
+  }
+  {
+    constexpr auto COUNT_PER_VECTOR = 8;
+    using Vec = Vec<COUNT_PER_VECTOR * sizeof(TypeParam), TypeParam>;
+    using MultiVec = MultiVec<4, COUNT_PER_VECTOR, Vec>;
+    using TwoWayMergeT = TwoWayMerge<COUNT_PER_VECTOR, TypeParam>;
+
+    auto a_data = simd_vector<TypeParam>{1,  2,  3,  4,  5,  6,  7,  8,  9,  10, 11, 12, 13, 14, 15, 16,
+                                         17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32};
+    auto b_data = simd_vector<TypeParam>{2,  3,  3,  5,  6,  8,  8,  10, 11, 13, 16, 18, 19, 20, 21, 22,
+                                         23, 24, 24, 25, 26, 28, 30, 31, 32, 33, 36, 38, 40, 41, 42, 43};
 
     test_bitonic_merge_network<TwoWayMergeT, MultiVec, MERGE_4AB>(a_data, b_data, 4 * COUNT_PER_VECTOR);
   }
@@ -265,6 +342,7 @@ TYPED_TEST(SimdTwoWayMergeTest, MergeEqLength) {
   };
   test_merge_eq_length.template operator()<2>();
   test_merge_eq_length.template operator()<4>();
+  test_merge_eq_length.template operator()<8>();
 }
 
 TYPED_TEST(SimdTwoWayMergeTest, MergeVariableLength) {
@@ -313,6 +391,7 @@ TYPED_TEST(SimdTwoWayMergeTest, MergeVariableLength) {
   };
   test_merge_var_length.template operator()<2>();
   test_merge_var_length.template operator()<4>();
+  test_merge_var_length.template operator()<8>();
 }
 
 }  // namespace hyrise::simd_sort

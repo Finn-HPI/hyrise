@@ -275,17 +275,6 @@ struct SortingNetwork<8, T> {
     compare_min_max(row_5, row_6);
 
     // Transpose 8x8 Matrix
-    //                                                         0     1    2    3    4    5    6    7
-
-    // __m512i temp0 = _mm512_unpacklo_epi64(row0, row1);  // {a00, a10, a01, a11, a02, a12, a03, a13}
-    // __m512i temp1 = _mm512_unpackhi_epi64(row0, row1);  // {a04, a14, a05, a15, a06, a16, a07, a17}
-    //                                                           8   9    10   11   12   13   14    15
-    // __m512i temp2 = _mm512_unpacklo_epi64(row2, row3);  // {a20, a30, a21, a31, a22, a32, a23, a33}
-    // __m512i temp3 = _mm512_unpackhi_epi64(row2, row3);  // {a24, a34, a25, a35, a26, a36, a27, a37}
-    // __m512i temp4 = _mm512_unpacklo_epi64(row4, row5);  // {a40, a50, a41, a51, a42, a52, a43, a53}
-    // __m512i temp5 = _mm512_unpackhi_epi64(row4, row5);  // {a44, a54, a45, a55, a46, a56, a47, a57}
-    // __m512i temp6 = _mm512_unpacklo_epi64(row6, row7);  // {a60, a70, a61, a71, a62, a72, a63, a73}
-    // __m512i temp7 = _mm512_unpackhi_epi64(row6, row7);  // {a64, a74, a65, a75, a66, a76, a67, a77}
     auto interleaved_low_01 = __builtin_shufflevector(row_0, row_1, 0, 8, 1, 9, 2, 10, 3, 11);
     auto interleaved_high_01 = __builtin_shufflevector(row_0, row_1, 4, 12, 5, 13, 6, 14, 7, 15);
     auto interleaved_low_23 = __builtin_shufflevector(row_2, row_3, 0, 8, 1, 9, 2, 10, 3, 11);
@@ -295,15 +284,7 @@ struct SortingNetwork<8, T> {
     auto interleaved_low_67 = __builtin_shufflevector(row_6, row_7, 0, 8, 1, 9, 2, 10, 3, 11);
     auto interleaved_high_67 = __builtin_shufflevector(row_6, row_7, 4, 12, 5, 13, 6, 14, 7, 15);
 
-    // __m512i t0 = _mm512_shuffle_i64x2(temp0, temp2, 0x44);  // {a00, a10, a20, a30, a01, a11, a21, a31}
-    // __m512i t1 = _mm512_shuffle_i64x2(temp1, temp3, 0x44);  // {a04, a14, a24, a34, a05, a15, a25, a35}
-    // __m512i t2 = _mm512_shuffle_i64x2(temp0, temp2, 0xEE);  // {a02, a12, a22, a32, a03, a13, a23, a33}
-    // __m512i t3 = _mm512_shuffle_i64x2(temp1, temp3, 0xEE);  // {a06, a16, a26, a36, a07, a17, a27, a37}
-    // __m512i t4 = _mm512_shuffle_i64x2(temp4, temp6, 0x44);  // {a40, a50, a60, a70, a41, a51, a61, a71}
-    // __m512i t5 = _mm512_shuffle_i64x2(temp5, temp7, 0x44);  // {a44, a54, a64, a74, a45, a55, a65, a75}
-    // __m512i t6 = _mm512_shuffle_i64x2(temp4, temp6, 0xEE);  // {a42, a52, a62, a72, a43, a53, a63, a73}
-    // __m512i t7 = _mm512_shuffle_i64x2(temp5, temp7, 0xEE);  // {a46, a56, a66, a76, a47, a57, a67, a77}
-
+    // Combine interleaved rows into temporary rows
     auto temp_0 = __builtin_shufflevector(interleaved_low_01, interleaved_low_23, 0, 1, 8, 9, 2, 3, 10, 11);
     auto temp_1 = __builtin_shufflevector(interleaved_high_01, interleaved_high_23, 0, 1, 8, 9, 2, 3, 10, 11);
     auto temp_2 = __builtin_shufflevector(interleaved_low_01, interleaved_low_23, 4, 5, 12, 13, 6, 7, 14, 15);
@@ -312,24 +293,16 @@ struct SortingNetwork<8, T> {
     auto temp_5 = __builtin_shufflevector(interleaved_high_45, interleaved_high_67, 0, 1, 8, 9, 2, 3, 10, 11);
     auto temp_6 = __builtin_shufflevector(interleaved_low_45, interleaved_low_67, 4, 5, 12, 13, 6, 7, 14, 15);
     auto temp_7 = __builtin_shufflevector(interleaved_high_45, interleaved_high_67, 4, 5, 12, 13, 6, 7, 14, 15);
-    //
-    // row_0 = _mm512_unpacklo_epi64(t0, t4);  // {a00, a10, a20, a30, a40, a50, a60, a70}
-    // row_1 = _mm512_unpackhi_epi64(t0, t4);  // {a01, a11, a21, a31, a41, a51, a61, a71}
-    // row_2 = _mm512_unpacklo_epi64(t2, t6);  // {a02, a12, a22, a32, a42, a52, a62, a72}
-    // row_3 = _mm512_unpackhi_epi64(t2, t6);  // {a03, a13, a23, a33, a43, a53, a63, a73}
-    // row_4 = _mm512_unpacklo_epi64(t1, t5);  // {a04, a14, a24, a34, a44, a54, a64, a74}
-    // row_5 = _mm512_unpackhi_epi64(t1, t5);  // {a05, a15, a25, a35, a45, a55, a65, a75}
-    // row_6 = _mm512_unpacklo_epi64(t3, t7);  // {a06, a16, a26, a36, a46, a56, a66, a76}
-    // row_7 = _mm512_unpackhi_epi64(t3, t7);  // {a07, a17, a27, a37, a47, a57, a67, a77}
 
-    row_0 = __builtin_shufflevector(temp_0, temp_4, 0, 1, 8, 9, 2, 3, 10, 11);
-    row_1 = __builtin_shufflevector(temp_0, temp_4, 4, 5, 12, 13, 6, 7, 14, 15);
-    row_2 = __builtin_shufflevector(temp_2, temp_6, 0, 1, 8, 9, 2, 3, 10, 11);
-    row_3 = __builtin_shufflevector(temp_2, temp_6, 4, 5, 12, 13, 6, 7, 14, 15);
-    row_4 = __builtin_shufflevector(temp_1, temp_5, 0, 1, 8, 9, 2, 3, 10, 11);
-    row_5 = __builtin_shufflevector(temp_1, temp_5, 4, 5, 12, 13, 6, 7, 14, 15);
-    row_6 = __builtin_shufflevector(temp_3, temp_7, 0, 1, 8, 9, 2, 3, 10, 11);
-    row_7 = __builtin_shufflevector(temp_3, temp_7, 4, 5, 12, 13, 6, 7, 14, 15);
+    // Final shuffle to arrange columns into rows
+    row_0 = __builtin_shufflevector(temp_0, temp_4, 0, 8, 1, 9, 2, 10, 3, 11);
+    row_1 = __builtin_shufflevector(temp_0, temp_4, 4, 12, 5, 13, 6, 14, 7, 15);
+    row_2 = __builtin_shufflevector(temp_2, temp_6, 0, 8, 1, 9, 2, 10, 3, 11);
+    row_3 = __builtin_shufflevector(temp_2, temp_6, 4, 12, 5, 13, 6, 14, 7, 15);
+    row_4 = __builtin_shufflevector(temp_1, temp_5, 0, 8, 1, 9, 2, 10, 3, 11);
+    row_5 = __builtin_shufflevector(temp_1, temp_5, 4, 12, 5, 13, 6, 14, 7, 15);
+    row_6 = __builtin_shufflevector(temp_3, temp_7, 0, 8, 1, 9, 2, 10, 3, 11);
+    row_7 = __builtin_shufflevector(temp_3, temp_7, 4, 12, 5, 13, 6, 14, 7, 15);
 
     // Write to output
     store_aligned(row_0, output);
@@ -364,8 +337,8 @@ inline __attribute((always_inline)) bool is_simd_aligned(const T* addr) {
 }
 
 template <typename BlockType, typename T>
-inline void __attribute__((always_inline))
-choose_next_and_update_pointers(BlockType*& next, BlockType*& a_ptr, BlockType*& b_ptr) {
+inline void __attribute__((always_inline)) choose_next_and_update_pointers(BlockType*& next, BlockType*& a_ptr,
+                                                                           BlockType*& b_ptr) {
   const int8_t cmp = *reinterpret_cast<T*>(a_ptr) < *reinterpret_cast<T*>(b_ptr);
   next = cmp ? a_ptr : b_ptr;
   a_ptr += cmp;

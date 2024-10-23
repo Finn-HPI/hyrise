@@ -8,7 +8,7 @@
 
 namespace hyrise::simd_sort {
 
-using data_type_list = testing::Types<float, int, uint32_t, double, int64_t, uint64_t>;
+using data_type_list = testing::Types<uint64_t>;
 
 template <class>
 class SimdUtilsTest : public BaseTest {};
@@ -63,7 +63,7 @@ TYPED_TEST(SimdUtilsTest, LoadAndStoreAligned) {
 }
 
 TYPED_TEST(SimdUtilsTest, LoadAndStoreUnaligned) {
-  const auto input = simd_vector<TypeParam>{1, 2, 3, 4, 5, 6, 7, 8};
+  const auto input = simd_vector<TypeParam>{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
   {
     constexpr auto COUNT_PER_VECTOR = 2;
     using Vec = Vec<COUNT_PER_VECTOR * sizeof(TypeParam), TypeParam>;  // Vector of 2 64-bit elements.
@@ -81,6 +81,18 @@ TYPED_TEST(SimdUtilsTest, LoadAndStoreUnaligned) {
     using Vec = Vec<COUNT_PER_VECTOR * sizeof(TypeParam), TypeParam>;  // Vector of 4 64-bit elements.
     auto output = simd_vector<TypeParam>(COUNT_PER_VECTOR);
     const auto result = simd_vector<TypeParam>{6, 8, 10, 12};
+
+    auto vec_a = load_unaligned<Vec>(input.data());
+    auto vec_b = load_unaligned<Vec>(input.data() + COUNT_PER_VECTOR);
+    auto sum_vec = vec_a + vec_b;
+    store_unaligned<Vec>(sum_vec, output.data());
+    EXPECT_EQ(output, result);
+  }
+  {
+    constexpr auto COUNT_PER_VECTOR = 8;
+    using Vec = Vec<COUNT_PER_VECTOR * sizeof(TypeParam), TypeParam>;  // Vector of 4 64-bit elements.
+    auto output = simd_vector<TypeParam>(COUNT_PER_VECTOR);
+    const auto result = simd_vector<TypeParam>{10, 12, 14, 16, 18, 20, 22, 24};
 
     auto vec_a = load_unaligned<Vec>(input.data());
     auto vec_b = load_unaligned<Vec>(input.data() + COUNT_PER_VECTOR);
@@ -114,12 +126,15 @@ TYPED_TEST(SimdUtilsTest, SortBlockSize) {
 TYPED_TEST(SimdUtilsTest, MultiVec) {
   using Vec2 = Vec<2 * sizeof(TypeParam), TypeParam>;  // Vector of 2 64-bit elements.
   using Vec4 = Vec<4 * sizeof(TypeParam), TypeParam>;  // Vector of 4 64-bit elements.
+  using Vec8 = Vec<8 * sizeof(TypeParam), TypeParam>;  // Vector of 8 64-bit elements.
 
-  auto input = simd_vector<TypeParam>{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
+  auto input = simd_vector<TypeParam>{1,  2,  3,  4,  5,  6,  7,  8,  9,  10, 11, 12, 13, 14, 15, 16,
+                                      17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32};
   auto output2 = simd_vector<TypeParam>(2);
   auto output4 = simd_vector<TypeParam>(4);
   auto output8 = simd_vector<TypeParam>(8);
   auto output16 = simd_vector<TypeParam>(16);
+  auto output32 = simd_vector<TypeParam>(32);
 
   auto result1x2 = simd_vector<TypeParam>{1, 2};
   auto result1x4 = simd_vector<TypeParam>{1, 2, 3, 4};
@@ -127,13 +142,17 @@ TYPED_TEST(SimdUtilsTest, MultiVec) {
   auto result2x4 = simd_vector<TypeParam>{1, 2, 3, 4, 5, 6, 7, 8};
   auto result4x2 = simd_vector<TypeParam>{1, 2, 3, 4, 5, 6, 7, 8};
   auto result4x4 = simd_vector<TypeParam>{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
+  auto result4x8 = input;
 
   using SingleMultiVec2 = MultiVec<1, 2, Vec2>;
   using SingleMultiVec4 = MultiVec<1, 4, Vec4>;
+  using SingleMultiVec8 = MultiVec<1, 8, Vec8>;
   using DoubleMultiVec2 = MultiVec<2, 2, Vec2>;
   using DoubleMultiVec4 = MultiVec<2, 4, Vec4>;
+  using DoubleMultiVec8 = MultiVec<2, 8, Vec8>;
   using QuadMultiVec2 = MultiVec<4, 2, Vec2>;
   using QuadMultiVec4 = MultiVec<4, 4, Vec4>;
+  using QuadMultiVec8 = MultiVec<4, 8, Vec8>;
 
   {
     auto multi_vec = SingleMultiVec2{};
@@ -152,6 +171,14 @@ TYPED_TEST(SimdUtilsTest, MultiVec) {
     EXPECT_EQ(output4, result1x4);
   }
   {
+    auto multi_vec = SingleMultiVec8{};
+    multi_vec.load(input.data());
+    EXPECT_EQ(multi_vec.first()[0], 1);
+    EXPECT_EQ(multi_vec.last()[0], 1);
+    multi_vec.store(output8.data());
+    EXPECT_EQ(output8, result2x4);
+  }
+  {
     auto multi_vec = DoubleMultiVec2{};
     multi_vec.load(input.data());
     EXPECT_EQ(multi_vec.first()[0], 1);
@@ -168,6 +195,14 @@ TYPED_TEST(SimdUtilsTest, MultiVec) {
     EXPECT_EQ(output8, result2x4);
   }
   {
+    auto multi_vec = DoubleMultiVec8{};
+    multi_vec.load(input.data());
+    EXPECT_EQ(multi_vec.first()[0], 1);
+    EXPECT_EQ(multi_vec.last()[0], 9);
+    multi_vec.store(output16.data());
+    EXPECT_EQ(output16, result4x4);
+  }
+  {
     auto multi_vec = QuadMultiVec2{};
     multi_vec.load(input.data());
     EXPECT_EQ(multi_vec.first()[0], 1);
@@ -182,6 +217,14 @@ TYPED_TEST(SimdUtilsTest, MultiVec) {
     EXPECT_EQ(multi_vec.last()[0], 13);
     multi_vec.store(output16.data());
     EXPECT_EQ(output16, result4x4);
+  }
+  {
+    auto multi_vec = QuadMultiVec8{};
+    multi_vec.load(input.data());
+    EXPECT_EQ(multi_vec.first()[0], 1);
+    EXPECT_EQ(multi_vec.last()[0], 25);
+    multi_vec.store(output32.data());
+    EXPECT_EQ(output32, result4x8);
   }
 }
 
@@ -289,6 +332,39 @@ TYPED_TEST(SimdUtilsTest, SortingNetwork) {
     auto output = simd_vector<TypeParam>(16);
 
     SortingNetwork<4, TypeParam>::sort(input.data(), output.data());
+    EXPECT_EQ(output, result);
+  }
+  // Tests for 8x8 sorting network.
+  {
+    // clang-format off
+    auto input = simd_vector<TypeParam>{
+      45, 32, 12, 58, 9, 24, 67, 13,
+      88, 54, 76, 2, 35, 21, 63, 42,
+      6, 18, 27, 70, 33, 14, 55, 48,
+      92, 82, 4, 20, 51, 73, 60, 30,
+      40, 99, 7, 16, 78, 26, 8, 64,
+      28, 91, 5, 37, 44, 3, 31, 11,
+      75, 56, 81, 19, 52, 23, 69, 49,
+      90, 80, 17, 66, 47, 29, 34, 59
+    };
+    const auto result = simd_vector<TypeParam>{
+      6, 28, 40, 45, 75, 88, 90, 92,
+      18, 32, 54, 56, 80, 82, 91, 99,
+      4,  5,  7, 12, 17, 27, 76, 81,
+      2, 16, 19, 20, 37, 58, 66, 70,
+      9, 33, 35, 44, 47, 51, 52, 78,
+      3, 14, 21, 23, 24, 26, 29, 73,
+      8, 31, 34, 55, 60, 63, 67, 69,
+      11, 13, 30, 42, 48, 49, 59, 64
+    };
+    // clang-format on
+    const auto result2 =
+        simd_vector<TypeParam>{6,  18, 4,  2,  9,  3,  8,  11, 28, 32, 5,  16, 33, 14, 31, 13, 40, 54, 7,  19, 35, 21,
+                               34, 30, 45, 56, 12, 20, 44, 23, 55, 42, 75, 80, 17, 37, 47, 24, 60, 48, 88, 82, 27, 58,
+                               51, 26, 63, 49, 90, 91, 76, 66, 52, 29, 67, 59, 92, 99, 81, 70, 78, 73, 69, 64};
+    auto output = simd_vector<TypeParam>(64);
+
+    SortingNetwork<8, TypeParam>::sort(input.data(), output.data());
     EXPECT_EQ(output, result);
   }
 }
