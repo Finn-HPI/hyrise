@@ -95,6 +95,7 @@ set(
     lib/operators/join_index_test.cpp
     lib/operators/join_nested_loop_test.cpp
     lib/operators/join_sort_merge_test.cpp
+    lib/operators/join_simd_sort_merge_test.cpp
     lib/operators/join_test_runner.cpp
     lib/operators/join_verification_test.cpp
     lib/operators/join_simd_sort_merge/simd_utils_test.cpp

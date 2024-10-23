@@ -38,6 +38,7 @@ enum class OperatorType {
   JoinIndex,
   JoinNestedLoop,
   JoinSortMerge,
+  JoinSimdSortMerge,
   JoinVerification,
   Limit,
   Print,
