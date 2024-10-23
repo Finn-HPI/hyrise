@@ -23,7 +23,7 @@ TYPED_TEST(SimdUtilsTest, CreateAlignedData) {
 }
 
 TYPED_TEST(SimdUtilsTest, LoadAndStoreAligned) {
-  const auto input = simd_vector<TypeParam>{1, 2, 3, 4, 5, 6, 7, 8};
+  const auto input = simd_vector<TypeParam>{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
   {
     constexpr auto COUNT_PER_VECTOR = 2;
     using Vec = Vec<COUNT_PER_VECTOR * sizeof(TypeParam), TypeParam>;  // Vector of 2 64-bit elements.
@@ -52,7 +52,7 @@ TYPED_TEST(SimdUtilsTest, LoadAndStoreAligned) {
     constexpr auto COUNT_PER_VECTOR = 8;
     using Vec = Vec<COUNT_PER_VECTOR * sizeof(TypeParam), TypeParam>;  // Vector of 4 64-bit elements.
     auto output = simd_vector<TypeParam>(COUNT_PER_VECTOR);
-    const auto result = simd_vector<TypeParam>{1, 2, 3, 4, 5, 6, 7, 8};
+    const auto result = simd_vector<TypeParam>{10, 12, 14, 16, 18, 20, 22, 24};
 
     auto vec_a = load_aligned<Vec>(input.data());
     auto vec_b = load_aligned<Vec>(input.data() + COUNT_PER_VECTOR);
