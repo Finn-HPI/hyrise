@@ -275,34 +275,34 @@ struct SortingNetwork<8, T> {
     compare_min_max(row_5, row_6);
 
     // Transpose 8x8 Matrix
-    auto interleaved_low_01 = __builtin_shufflevector(row_0, row_1, 0, 8, 1, 9, 2, 10, 3, 11);
-    auto interleaved_high_01 = __builtin_shufflevector(row_0, row_1, 4, 12, 5, 13, 6, 14, 7, 15);
-    auto interleaved_low_23 = __builtin_shufflevector(row_2, row_3, 0, 8, 1, 9, 2, 10, 3, 11);
-    auto interleaved_high_23 = __builtin_shufflevector(row_2, row_3, 4, 12, 5, 13, 6, 14, 7, 15);
-    auto interleaved_low_45 = __builtin_shufflevector(row_4, row_5, 0, 8, 1, 9, 2, 10, 3, 11);
-    auto interleaved_high_45 = __builtin_shufflevector(row_4, row_5, 4, 12, 5, 13, 6, 14, 7, 15);
-    auto interleaved_low_67 = __builtin_shufflevector(row_6, row_7, 0, 8, 1, 9, 2, 10, 3, 11);
-    auto interleaved_high_67 = __builtin_shufflevector(row_6, row_7, 4, 12, 5, 13, 6, 14, 7, 15);
+    // Stage 1.
+    auto s1_row_0 = __builtin_shufflevector(row_0, row_1, 0, 8, 2, 10, 4, 12, 6, 14);
+    auto s1_row_1 = __builtin_shufflevector(row_0, row_1, 1, 9, 3, 11, 5, 13, 7, 15);
+    auto s1_row_2 = __builtin_shufflevector(row_2, row_3, 0, 8, 2, 10, 4, 12, 6, 14);
+    auto s1_row_3 = __builtin_shufflevector(row_2, row_3, 1, 9, 3, 11, 5, 13, 7, 15);
+    auto s1_row_4 = __builtin_shufflevector(row_4, row_5, 0, 8, 2, 10, 4, 12, 6, 14);
+    auto s1_row_5 = __builtin_shufflevector(row_4, row_5, 1, 9, 3, 11, 5, 13, 7, 15);
+    auto s1_row_6 = __builtin_shufflevector(row_6, row_7, 0, 8, 2, 10, 4, 12, 6, 14);
+    auto s1_row_7 = __builtin_shufflevector(row_6, row_7, 1, 9, 3, 11, 5, 13, 7, 15);
+    // Stage 2.
+    auto s2_row_0 = __builtin_shufflevector(s1_row_0, s1_row_2, 0, 1, 8, 9, 4, 5, 12, 13);
+    auto s2_row_1 = __builtin_shufflevector(s1_row_1, s1_row_3, 0, 1, 8, 9, 4, 5, 12, 13);
+    auto s2_row_2 = __builtin_shufflevector(s1_row_0, s1_row_2, 2, 3, 10, 11, 6, 7, 14, 15);
+    auto s2_row_3 = __builtin_shufflevector(s1_row_1, s1_row_3, 2, 3, 10, 11, 6, 7, 14, 15);
+    auto s2_row_4 = __builtin_shufflevector(s1_row_4, s1_row_6, 0, 1, 8, 9, 4, 5, 12, 13);
+    auto s2_row_5 = __builtin_shufflevector(s1_row_5, s1_row_7, 0, 1, 8, 9, 4, 5, 12, 13);
+    auto s2_row_6 = __builtin_shufflevector(s1_row_4, s1_row_6, 2, 3, 10, 11, 6, 7, 14, 15);
+    auto s2_row_7 = __builtin_shufflevector(s1_row_5, s1_row_7, 2, 3, 10, 11, 6, 7, 14, 15);
+    // Stage 3.
+    row_0 = __builtin_shufflevector(s2_row_0, s2_row_4, 0, 1, 2, 3, 8, 9, 10, 11);
+    row_1 = __builtin_shufflevector(s2_row_1, s2_row_5, 0, 1, 2, 3, 8, 9, 10, 11);
+    row_2 = __builtin_shufflevector(s2_row_2, s2_row_6, 0, 1, 2, 3, 8, 9, 10, 11);
+    row_3 = __builtin_shufflevector(s2_row_3, s2_row_7, 0, 1, 2, 3, 8, 9, 10, 11);
 
-    // Combine interleaved rows into temporary rows
-    auto temp_0 = __builtin_shufflevector(interleaved_low_01, interleaved_low_23, 0, 1, 8, 9, 2, 3, 10, 11);
-    auto temp_1 = __builtin_shufflevector(interleaved_high_01, interleaved_high_23, 0, 1, 8, 9, 2, 3, 10, 11);
-    auto temp_2 = __builtin_shufflevector(interleaved_low_01, interleaved_low_23, 4, 5, 12, 13, 6, 7, 14, 15);
-    auto temp_3 = __builtin_shufflevector(interleaved_high_01, interleaved_high_23, 4, 5, 12, 13, 6, 7, 14, 15);
-    auto temp_4 = __builtin_shufflevector(interleaved_low_45, interleaved_low_67, 0, 1, 8, 9, 2, 3, 10, 11);
-    auto temp_5 = __builtin_shufflevector(interleaved_high_45, interleaved_high_67, 0, 1, 8, 9, 2, 3, 10, 11);
-    auto temp_6 = __builtin_shufflevector(interleaved_low_45, interleaved_low_67, 4, 5, 12, 13, 6, 7, 14, 15);
-    auto temp_7 = __builtin_shufflevector(interleaved_high_45, interleaved_high_67, 4, 5, 12, 13, 6, 7, 14, 15);
-
-    // Final shuffle to arrange columns into rows
-    row_0 = __builtin_shufflevector(temp_0, temp_4, 0, 8, 1, 9, 2, 10, 3, 11);
-    row_1 = __builtin_shufflevector(temp_0, temp_4, 4, 12, 5, 13, 6, 14, 7, 15);
-    row_2 = __builtin_shufflevector(temp_2, temp_6, 0, 8, 1, 9, 2, 10, 3, 11);
-    row_3 = __builtin_shufflevector(temp_2, temp_6, 4, 12, 5, 13, 6, 14, 7, 15);
-    row_4 = __builtin_shufflevector(temp_1, temp_5, 0, 8, 1, 9, 2, 10, 3, 11);
-    row_5 = __builtin_shufflevector(temp_1, temp_5, 4, 12, 5, 13, 6, 14, 7, 15);
-    row_6 = __builtin_shufflevector(temp_3, temp_7, 0, 8, 1, 9, 2, 10, 3, 11);
-    row_7 = __builtin_shufflevector(temp_3, temp_7, 4, 12, 5, 13, 6, 14, 7, 15);
+    row_4 = __builtin_shufflevector(s2_row_0, s2_row_4, 4, 5, 6, 7, 12, 13, 14, 15);
+    row_5 = __builtin_shufflevector(s2_row_1, s2_row_5, 4, 5, 6, 7, 12, 13, 14, 15);
+    row_6 = __builtin_shufflevector(s2_row_2, s2_row_6, 4, 5, 6, 7, 12, 13, 14, 15);
+    row_7 = __builtin_shufflevector(s2_row_3, s2_row_7, 4, 5, 6, 7, 12, 13, 14, 15);
 
     // Write to output
     store_aligned(row_0, output);

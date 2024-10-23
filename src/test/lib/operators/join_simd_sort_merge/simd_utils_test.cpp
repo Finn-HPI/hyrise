@@ -8,7 +8,7 @@
 
 namespace hyrise::simd_sort {
 
-using data_type_list = testing::Types<uint64_t>;
+using data_type_list = testing::Types<float, int, uint32_t, double, int64_t, uint64_t>;
 
 template <class>
 class SimdUtilsTest : public BaseTest {};

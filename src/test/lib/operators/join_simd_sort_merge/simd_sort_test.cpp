@@ -37,6 +37,7 @@ TYPED_TEST(SimdSortTest, SortBlock) {
   };
   test_sort_block.template operator()<2>();
   test_sort_block.template operator()<4>();
+  test_sort_block.template operator()<8>();
 }
 
 TYPED_TEST(SimdSortTest, SortIncompleteBlock) {
@@ -66,6 +67,7 @@ TYPED_TEST(SimdSortTest, SortIncompleteBlock) {
     const auto scale = BASE_FACTOR * static_cast<double>(scale_factor);
     test_sort_block.template operator()<2>(scale);
     test_sort_block.template operator()<4>(scale);
+    test_sort_block.template operator()<8>(scale);
   }
 }
 
@@ -100,12 +102,14 @@ TYPED_TEST(SimdSortTest, SortComplete) {
     //  Test with integer multiples of BLOCK_SIZE.
     test_sort.template operator()<2>(static_cast<double>(scale));
     test_sort.template operator()<4>(static_cast<double>(scale));
+    test_sort.template operator()<8>(static_cast<double>(scale));
     // Test with fractional multiples of BlOCK_SIZE.
     constexpr auto BASE_FACTOR = double{1} / static_cast<double>(NUM_FRACTIONS);
     for (auto scale_factor = std::size_t{1}; scale_factor < NUM_FRACTIONS; ++scale_factor) {
       const auto fractional_scale_summand = BASE_FACTOR * static_cast<double>(scale_factor);
       test_sort.template operator()<2>(static_cast<double>(scale) + fractional_scale_summand);
       test_sort.template operator()<4>(static_cast<double>(scale) + fractional_scale_summand);
+      test_sort.template operator()<8>(static_cast<double>(scale) + fractional_scale_summand);
     }
   }
 }
