@@ -8,7 +8,7 @@
 
 #include <span>
 
-#include "operators/join_sort_merge/column_materializer.hpp"
+#include "operators/join_simd_sort_merge/column_materializer.hpp"
 #include "types.hpp"
 #include "utils/assert.hpp"
 
@@ -107,23 +107,59 @@ const std::string& JoinSimdSortMerge::name() const {
 }
 
 template <typename T>
-uint32_t transform_to_simd_sorting_key(const T& value [[maybe_unused]]) {
-  return 0;
-};
-
-template <typename T>
 concept FourByteType = (sizeof(T) == 4);
 
 template <typename T>
 struct Data32BitCompression {
-  static inline uint32_t compress(const T& value [[maybe_unused]]) {
-    return 0;
+  static inline uint32_t compress(T& value [[maybe_unused]], const T& min_value [[maybe_unused]],
+                                  const T& max_value [[maybe_unused]]) {
+    static_assert(false, "Not implemented");
+  }
+};
+
+template <FourByteType T>
+struct Data32BitCompression<T> {
+  static inline uint32_t compress(T value, const T& min_value [[maybe_unused]], const T& max_value [[maybe_unused]]) {
+    return std::bit_cast<uint32_t>(value);
+  }
+};
+
+template <>
+struct Data32BitCompression<double> {
+  static inline uint32_t compress(double& value, const double& /*min_value*/, const double& /*max_value*/) {
+    auto unsigned_value = std::bit_cast<uint64_t>(value);
+    const auto high = static_cast<uint32_t>(unsigned_value >> 32u);
+    const auto low = static_cast<uint32_t>(unsigned_value);
+
+    std::size_t hash = 0;
+    boost::hash_combine(hash, high);
+    boost::hash_combine(hash, low);
+    return static_cast<uint32_t>(hash);
+  }
+};
+
+template <>
+struct Data32BitCompression<int64_t> {
+  static inline uint32_t compress(int64_t& value, const int64_t& min_value, const int64_t& max_value) {
+    static constexpr auto MAX_ALLOWED_DIFFERENCE = std::numeric_limits<uint32_t>::max();
+    if (max_value - min_value <= MAX_ALLOWED_DIFFERENCE) {
+      return Data32BitCompression<uint32_t>::compress(value - min_value, 0, max_value - min_value);
+    }
+    auto unsigned_value = static_cast<uint64_t>(value);
+    const auto high = static_cast<uint32_t>(unsigned_value >> 32u);
+    const auto low = static_cast<uint32_t>(unsigned_value);
+
+    std::size_t hash = 0;
+    boost::hash_combine(hash, high);
+    boost::hash_combine(hash, low);
+    return static_cast<uint32_t>(hash);
   }
 };
 
 template <>
 struct Data32BitCompression<pmr_string> {
-  static inline uint32_t compress(const pmr_string& value [[maybe_unused]]) {
+  static inline uint32_t compress(pmr_string& value, const pmr_string& min_value [[maybe_unused]],
+                                  const pmr_string& max_value [[maybe_unused]]) {
     auto key = uint32_t{0};
     const auto string_length = value.length();
     for (auto index = std::size_t{0}; index < string_length; index++) {
@@ -133,31 +169,22 @@ struct Data32BitCompression<pmr_string> {
   }
 };
 
-template <FourByteType T>
-struct Data32BitCompression<T> {
-  static inline uint32_t compress(const T value) {
-    return static_cast<uint32_t>(value);
-  }
-};
-
 template <typename T>
 void materialize_column_and_transform_to_simd_format(const std::shared_ptr<const Table> table, const ColumnID column_id,
-                                                     MaterializedSegmentList<T>& materialized_segments,
-                                                     SimdElementList& simd_element_list) {
-  const auto sort = false;
-  const auto materialize_null = false;
-  auto left_column_materializer = ColumnMaterializer<T>(sort, materialize_null, JoinSimdSortMerge::JOB_SPAWN_THRESHOLD);
-  auto [_materialized_segments, null_rows, samples] = left_column_materializer.materialize(table, column_id);
-  materialized_segments = std::move(_materialized_segments);
+                                                     MaterializedSegmentList<T>& materialized_segments [[maybe_unused]],
+                                                     SimdElementList& simd_element_list [[maybe_unused]]) {
+  auto left_column_materializer = SMJColumnMaterializer<T>(JoinSimdSortMerge::JOB_SPAWN_THRESHOLD);
+  auto [_materialized_segments, min_value, max_value] = left_column_materializer.materialize(table, column_id);
+
+  materialized_segments = _materialized_segments;
+
   simd_element_list.reserve(materialized_segments.size());
 
   auto index = size_t{0};
   for (auto& segment : materialized_segments) {
     for (auto& materialized_value : segment) {
       DebugAssert(index <= std::numeric_limits<uint32_t>::max(), "Index has to fit into 32 bits. ");
-
-      const auto sorting_key = Data32BitCompression<T>::compress(materialized_value.value);
-      // const auto simd_sorting_key = transform_to_simd_sorting_key(materialized_value.value);
+      const auto sorting_key = Data32BitCompression<T>::compress(materialized_value.value, min_value, max_value);
       simd_element_list.emplace_back(sorting_key, static_cast<uint32_t>(index));
       ++index;
     }
@@ -292,10 +319,10 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
     auto histogram_data_left = compute_histogram(_simd_elements_left);
     auto partitions_left = radix_partition(_simd_elements_left, histogram_data_left, _partitioned_element_left);
 
-    materialize_column_and_transform_to_simd_format<T>(_right_input_table, _primary_right_column_id,
-                                                       _materialized_segments_right, _simd_elements_right);
-    auto histogram_data_right = compute_histogram(_simd_elements_right);
-    auto partitions_right = radix_partition(_simd_elements_right, histogram_data_right, _partitioned_element_right);
+    // materialize_column_and_transform_to_simd_format<T>(_right_input_table, _primary_right_column_id,
+    //                                                    _materialized_segments_right, _simd_elements_right);
+    // auto histogram_data_right = compute_histogram(_simd_elements_right);
+    // auto partitions_right = radix_partition(_simd_elements_right, histogram_data_right, _partitioned_element_right);
 
     auto partition_index = std::size_t{0};
     for (auto& partition : partitions_left) {
