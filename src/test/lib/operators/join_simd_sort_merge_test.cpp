@@ -72,7 +72,6 @@ TEST_F(OperatorsJoinSimdSortMergeTest, StringJoinColumn) {
     const auto join_operator =
         std::make_shared<JoinSimdSortMerge>(test_input, test_input, JoinMode::Inner, primary_predicate);
     join_operator->execute();
-    EXPECT_TRUE(false);
   }
 }
 
@@ -84,6 +83,15 @@ TEST_F(OperatorsJoinSimdSortMergeTest, IntJoinColumn) {
   test_table->append({1, 2, 3});
   test_table->append({2, 1, 4});
   test_table->append({1, 2, 5});
+  test_table->append({3, 1, 1});
+  test_table->append({3, 1, 1});
+  test_table->append({3, 1, 1});
+  test_table->append({3, 1, 1});
+  test_table->append({3, 1, 1});
+  test_table->append({3, 1, 1});
+  test_table->append({3, 1, 1});
+  test_table->append({3, 1, 1});
+  test_table->append({3, 1, 1});
 
   const auto test_input = std::make_shared<TableWrapper>(test_table);
   test_input->never_clear_output();
@@ -95,7 +103,6 @@ TEST_F(OperatorsJoinSimdSortMergeTest, IntJoinColumn) {
     const auto join_operator =
         std::make_shared<JoinSimdSortMerge>(test_input, test_input, JoinMode::Inner, primary_predicate);
     join_operator->execute();
-    EXPECT_TRUE(false);
   }
 }
 

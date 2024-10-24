@@ -53,9 +53,9 @@ struct Subsample {
 template <typename T>
 class ColumnMaterializer {
  public:
-  explicit ColumnMaterializer(bool sort, bool materialize_null) : _sort{sort}, _materialize_null{materialize_null} {}
+  explicit ColumnMaterializer(bool sort, bool materialize_null, std::size_t job_spawn_threshold = 500)
+      : _sort{sort}, _materialize_null{materialize_null}, _job_spawn_threshold(job_spawn_threshold) {}
 
- public:
   // For sufficiently large chunks (number of rows > JOB_SPAWN_THRESHOLD), the materialization is parallelized. Returns
   // the materialized segments and a list of null row ids if _materialize_null is true.
   std::tuple<MaterializedSegmentList<T>, RowIDPosList, std::vector<T>> materialize(
@@ -83,7 +83,7 @@ class ColumnMaterializer {
         output[chunk_id] = _materialize_segment(segment, chunk_id, null_rows_per_chunk[chunk_id], subsamples[chunk_id]);
       };
 
-      if (chunk_size > JoinSortMerge::JOB_SPAWN_THRESHOLD) {
+      if (chunk_size > _job_spawn_threshold) {
         jobs.push_back(std::make_shared<JobTask>(materialize_job));
       } else {
         materialize_job();
@@ -169,6 +169,7 @@ class ColumnMaterializer {
  private:
   bool _sort;
   bool _materialize_null;
+  std::size_t _job_spawn_threshold;
 };
 
 }  // namespace hyrise

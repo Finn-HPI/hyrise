@@ -1,8 +1,43 @@
 #include "join_simd_sort_merge.hpp"
 
+#include <boost/functional/hash.hpp>
+
+#if defined(__x86_64__)
+#include "immintrin.h"
+#endif
+
+#include <span>
+
+#include "operators/join_sort_merge/column_materializer.hpp"
 #include "types.hpp"
+#include "utils/assert.hpp"
 
 namespace hyrise {
+
+constexpr auto BUCKET_BITS = uint8_t{8};
+constexpr auto BUCKET_MASK = std::size_t{(1u << BUCKET_BITS) - 1};
+constexpr auto BUCKET_COUNT = uint32_t{1u << BUCKET_BITS};
+constexpr auto CACHE_LINE_SIZE = std::size_t{64};
+constexpr auto TUPLES_PER_CACHELINE = CACHE_LINE_SIZE / 8;
+constexpr auto BUFFER_SIZE = CACHE_LINE_SIZE * 6;
+
+using CacheLine = union {
+  struct {
+    std::array<SimdElement, TUPLES_PER_CACHELINE> values;
+  } tuples;
+
+  struct {
+    std::array<SimdElement, TUPLES_PER_CACHELINE - 1> values;
+    std::size_t output_offset;
+  } data;
+};
+
+constexpr std::size_t align_to_cacheline(std::size_t value) {
+  return (value + TUPLES_PER_CACHELINE - 1) & ~(TUPLES_PER_CACHELINE - 1);
+}
+
+using SoftwareManagedBuffer = std::array<SimdElement, BUFFER_SIZE>;
+
 bool JoinSimdSortMerge::supports(const JoinConfiguration config) {
   return config.predicate_condition == PredicateCondition::Equals && config.left_data_type == config.right_data_type &&
          config.join_mode == JoinMode::Inner;
@@ -60,6 +95,141 @@ const std::string& JoinSimdSortMerge::name() const {
 }
 
 template <typename T>
+uint32_t transform_to_simd_sorting_key(T value [[maybe_unused]]) {
+  return 0;
+};
+
+template <>
+uint32_t transform_to_simd_sorting_key<float>(float value) {
+  return static_cast<uint32_t>(value);
+};
+
+template <>
+uint32_t transform_to_simd_sorting_key<int32_t>(int32_t value) {
+  return static_cast<uint32_t>(value);
+};
+
+template <typename T>
+void materialize_column_and_transform_to_simd_format(const std::shared_ptr<const Table> table, const ColumnID column_id,
+                                                     MaterializedSegmentList<T>& materialized_segments,
+                                                     SimdElementList& simd_element_list) {
+  const auto sort = false;
+  const auto materialize_null = false;
+  auto left_column_materializer = ColumnMaterializer<T>(sort, materialize_null, JoinSimdSortMerge::JOB_SPAWN_THRESHOLD);
+  auto [_materialized_segments, null_rows, samples] = left_column_materializer.materialize(table, column_id);
+  materialized_segments = std::move(_materialized_segments);
+  simd_element_list.reserve(materialized_segments.size());
+
+  auto index = size_t{0};
+  for (auto& segment : materialized_segments) {
+    for (auto& materialized_value : segment) {
+      DebugAssert(index <= std::numeric_limits<uint32_t>::max(), "Index has to fit into 32 bits. ");
+      const auto simd_sorting_key = transform_to_simd_sorting_key(materialized_value.value);
+      simd_element_list.emplace_back(simd_sorting_key, static_cast<uint32_t>(index));
+      ++index;
+    }
+  }
+}
+
+struct Partition {
+  SimdElement* data;
+  std::size_t size;
+
+  std::span<SimdElement> elements() const {
+    return {data, data + size};
+  }
+};
+
+using BucketData = struct {
+  std::size_t count;
+  std::size_t cache_aligend_count;
+};
+
+using HistogramData = struct {
+  std::array<BucketData, BUCKET_COUNT> histogram;
+  std::size_t cache_aligned_size;
+};
+
+HistogramData compute_histogram(SimdElementList& simd_elements) {
+  auto histogram_data = HistogramData{};
+  auto& histogram = histogram_data.histogram;
+
+  for (auto& element : simd_elements) {
+    ++histogram[element.key & BUCKET_MASK].count;
+  }
+  auto cache_aligned_output_size = std::size_t{0};
+  for (auto bucket_index = std::size_t{0}; bucket_index < BUCKET_COUNT; ++bucket_index) {
+    histogram[bucket_index].cache_aligend_count = align_to_cacheline(histogram[bucket_index].count);
+    cache_aligned_output_size += histogram[bucket_index].cache_aligend_count;
+  }
+
+  histogram_data.cache_aligned_size = cache_aligned_output_size;
+  return histogram_data;
+}
+
+void store_cacheline(auto* destination, auto* source) {
+#if defined(__AVX512F__)
+  auto* destination_address = reinterpret_cast<__m512i*>(destination);
+  auto vec = _mm512_load_si512(reinterpret_cast<__m512i*>(source));
+  _mm512_stream_si512(destination_address, vec);
+#elif defined(__AVX2__) || defined(__AVX__)
+  auto* first_destination_address = reinterpret_cast<__m256i*>(destination);
+  auto vec1 = _mm256_load_si256(reinterpret_cast<__m256i*>(source));
+  auto* second_destination_address = first_destination_address + 1;
+  auto vec2 = _mm256_load_si256(reinterpret_cast<__m256i*>(source) + 1);
+  _mm256_stream_si256(first_destination_address, vec1);
+  _mm256_stream_si256(second_destination_address, vec2);
+#else
+  std::memcpy(destination, source, 64);
+#endif
+}
+
+std::vector<Partition> radix_partition(SimdElementList& simd_elements, HistogramData& histogram_data,
+                                       simd_sort::simd_vector<SimdElement>& output) {
+  auto partitions = std::vector<Partition>(BUCKET_COUNT);
+  auto histogram = histogram_data.histogram;
+  output.resize(histogram_data.cache_aligned_size);
+
+  auto buffers = simd_sort::simd_vector<CacheLine>(BUCKET_COUNT);  // Cacheline aligned (64-bit).
+  buffers[0].data.output_offset = 0;
+  partitions[0].data = output.data();
+  partitions[0].size = histogram[0].count;
+  for (auto bucket_index = std::size_t{1}; bucket_index < BUCKET_COUNT; ++bucket_index) {
+    buffers[bucket_index].data.output_offset =
+        buffers[bucket_index - 1].data.output_offset + histogram[bucket_index - 1].cache_aligend_count;
+    partitions[bucket_index].data = output.data() + buffers[bucket_index].data.output_offset;
+    partitions[bucket_index].size = histogram[bucket_index].count;
+  }
+
+  for (auto& element : simd_elements) {
+    const auto bucket_index = element.key & BUCKET_MASK;
+    auto& buffer = buffers[bucket_index];
+    auto slot = buffer.data.output_offset;
+    auto local_offset = slot & (TUPLES_PER_CACHELINE - 1);
+
+    buffer.tuples.values[local_offset] = element;
+    if (local_offset == TUPLES_PER_CACHELINE - 1) {
+      auto* destination = output.data() + slot - (TUPLES_PER_CACHELINE - 1);
+      auto* source = &buffer;
+      store_cacheline(destination, source);
+    }
+    buffer.data.output_offset = slot + 1;
+  }
+
+  for (auto bucket_index = std::size_t{0}; bucket_index < BUCKET_COUNT; ++bucket_index) {
+    auto& buffer = buffers[bucket_index];
+    auto slot = buffer.data.output_offset;
+    auto local_offset = slot & (TUPLES_PER_CACHELINE - 1);
+    if (local_offset > 0) {
+      auto* output_address = output.data() + slot - local_offset;
+      std::memcpy(output_address, &buffer, local_offset * 8);
+    }
+  }
+
+  return partitions;
+}
+
+template <typename T>
 class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperatorImpl {
  public:
   JoinSimdSortMergeImpl(JoinSimdSortMerge& sort_merge_join, const std::shared_ptr<const Table>& left_input_table,
@@ -86,12 +256,41 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
   const PredicateCondition _primary_predicate_condition;
   const JoinMode _mode;
 
+  MaterializedSegmentList<T> _materialized_segments_left;
+  MaterializedSegmentList<T> _materialized_segments_right;
+  SimdElementList _simd_elements_left;
+  SimdElementList _simd_elements_right;
+
+  SimdElementList _partitioned_element_left;
+  SimdElementList _partitioned_element_right;
+
   const std::vector<OperatorJoinPredicate>& _secondary_join_predicates;
   // NOLINTEND(cppcoreguidelines-avoid-const-or-ref-data-members)
 
  public:
   std::shared_ptr<const Table> _on_execute() override {
-    std::cout << "execute :)" << std::endl;
+    materialize_column_and_transform_to_simd_format<T>(_left_input_table, _primary_left_column_id,
+                                                       _materialized_segments_left, _simd_elements_left);
+    auto histogram_data_left = compute_histogram(_simd_elements_left);
+    auto partitions_left = radix_partition(_simd_elements_left, histogram_data_left, _partitioned_element_left);
+
+    materialize_column_and_transform_to_simd_format<T>(_right_input_table, _primary_right_column_id,
+                                                       _materialized_segments_right, _simd_elements_right);
+    auto histogram_data_right = compute_histogram(_simd_elements_right);
+    auto partitions_right = radix_partition(_simd_elements_right, histogram_data_right, _partitioned_element_right);
+
+    auto partition_index = std::size_t{0};
+    for (auto& partition : partitions_left) {
+      if (partition.size == 0) {
+        ++partition_index;
+        continue;
+      }
+      for (auto& element : partition.elements()) {
+        std::cout << partition_index << ": " << element << std::endl;
+      }
+      ++partition_index;
+    }
+
     return nullptr;
   }
 };

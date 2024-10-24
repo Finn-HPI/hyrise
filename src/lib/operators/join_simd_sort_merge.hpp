@@ -2,9 +2,22 @@
 
 #include "abstract_join_operator.hpp"
 #include "operator_join_predicate.hpp"
+#include "operators/join_simd_sort_merge/simd_utils.hpp"
 #include "types.hpp"
 
+struct SimdElement {
+  uint32_t key;
+  uint32_t index;
+
+  friend std::ostream& operator<<(std::ostream& stream, const SimdElement& element) {
+    stream << "SimdElement(" << element.key << "," << element.index << ")";
+    return stream;
+  }
+};
+
 namespace hyrise {
+using SimdElementList = simd_sort::simd_vector<SimdElement>;
+
 class JoinSimdSortMerge : public AbstractJoinOperator {
  public:
   static bool supports(const JoinConfiguration config);
@@ -14,6 +27,7 @@ class JoinSimdSortMerge : public AbstractJoinOperator {
                     const std::vector<OperatorJoinPredicate>& secondary_predicates = {});
 
   const std::string& name() const override;
+  static constexpr auto JOB_SPAWN_THRESHOLD = 500;
 
  protected:
   std::shared_ptr<const Table> _on_execute() override;
