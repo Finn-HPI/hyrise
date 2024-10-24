@@ -31,9 +31,24 @@ using CacheLine = union {
   } data;
 };
 
-constexpr std::size_t align_to_cacheline(std::size_t value) {
-  return (value + TUPLES_PER_CACHELINE - 1) & ~(TUPLES_PER_CACHELINE - 1);
-}
+struct Partition {
+  SimdElement* data;
+  std::size_t size;
+
+  std::span<SimdElement> elements() const {
+    return {data, data + size};
+  }
+};
+
+using BucketData = struct {
+  std::size_t count;
+  std::size_t cache_aligend_count;
+};
+
+using HistogramData = struct {
+  std::array<BucketData, BUCKET_COUNT> histogram;
+  std::size_t cache_aligned_size;
+};
 
 bool JoinSimdSortMerge::supports(const JoinConfiguration config) {
   return config.predicate_condition == PredicateCondition::Equals && config.left_data_type == config.right_data_type &&
@@ -92,18 +107,37 @@ const std::string& JoinSimdSortMerge::name() const {
 }
 
 template <typename T>
-uint32_t transform_to_simd_sorting_key(T value [[maybe_unused]]) {
+uint32_t transform_to_simd_sorting_key(const T& value [[maybe_unused]]) {
   return 0;
 };
 
-template <>
-uint32_t transform_to_simd_sorting_key<float>(float value) {
-  return static_cast<uint32_t>(value);
+template <typename T>
+concept FourByteType = (sizeof(T) == 4);
+
+template <typename T>
+struct Data32BitCompression {
+  static inline uint32_t compress(const T& value [[maybe_unused]]) {
+    return 0;
+  }
 };
 
 template <>
-uint32_t transform_to_simd_sorting_key<int32_t>(int32_t value) {
-  return static_cast<uint32_t>(value);
+struct Data32BitCompression<pmr_string> {
+  static inline uint32_t compress(const pmr_string& value [[maybe_unused]]) {
+    auto key = uint32_t{0};
+    const auto string_length = value.length();
+    for (auto index = std::size_t{0}; index < string_length; index++) {
+      key = ((key << 5u) + key) ^ static_cast<uint32_t>(value[index]);
+    }
+    return key;
+  }
+};
+
+template <FourByteType T>
+struct Data32BitCompression<T> {
+  static inline uint32_t compress(const T value) {
+    return static_cast<uint32_t>(value);
+  }
 };
 
 template <typename T>
@@ -121,47 +155,17 @@ void materialize_column_and_transform_to_simd_format(const std::shared_ptr<const
   for (auto& segment : materialized_segments) {
     for (auto& materialized_value : segment) {
       DebugAssert(index <= std::numeric_limits<uint32_t>::max(), "Index has to fit into 32 bits. ");
-      const auto simd_sorting_key = transform_to_simd_sorting_key(materialized_value.value);
-      simd_element_list.emplace_back(simd_sorting_key, static_cast<uint32_t>(index));
+
+      const auto sorting_key = Data32BitCompression<T>::compress(materialized_value.value);
+      // const auto simd_sorting_key = transform_to_simd_sorting_key(materialized_value.value);
+      simd_element_list.emplace_back(sorting_key, static_cast<uint32_t>(index));
       ++index;
     }
   }
 }
 
-struct Partition {
-  SimdElement* data;
-  std::size_t size;
-
-  std::span<SimdElement> elements() const {
-    return {data, data + size};
-  }
-};
-
-using BucketData = struct {
-  std::size_t count;
-  std::size_t cache_aligend_count;
-};
-
-using HistogramData = struct {
-  std::array<BucketData, BUCKET_COUNT> histogram;
-  std::size_t cache_aligned_size;
-};
-
-HistogramData compute_histogram(SimdElementList& simd_elements) {
-  auto histogram_data = HistogramData{};
-  auto& histogram = histogram_data.histogram;
-
-  for (auto& element : simd_elements) {
-    ++histogram[element.key & BUCKET_MASK].count;
-  }
-  auto cache_aligned_output_size = std::size_t{0};
-  for (auto bucket_index = std::size_t{0}; bucket_index < BUCKET_COUNT; ++bucket_index) {
-    histogram[bucket_index].cache_aligend_count = align_to_cacheline(histogram[bucket_index].count);
-    cache_aligned_output_size += histogram[bucket_index].cache_aligend_count;
-  }
-
-  histogram_data.cache_aligned_size = cache_aligned_output_size;
-  return histogram_data;
+constexpr std::size_t align_to_cacheline(std::size_t value) {
+  return (value + TUPLES_PER_CACHELINE - 1) & ~(TUPLES_PER_CACHELINE - 1);
 }
 
 void store_cacheline(auto* destination, auto* source) {
@@ -179,6 +183,23 @@ void store_cacheline(auto* destination, auto* source) {
 #else
   std::memcpy(destination, source, 64);
 #endif
+}
+
+HistogramData compute_histogram(SimdElementList& simd_elements) {
+  auto histogram_data = HistogramData{};
+  auto& histogram = histogram_data.histogram;
+
+  for (auto& element : simd_elements) {
+    ++histogram[element.key & BUCKET_MASK].count;
+  }
+  auto cache_aligned_output_size = std::size_t{0};
+  for (auto bucket_index = std::size_t{0}; bucket_index < BUCKET_COUNT; ++bucket_index) {
+    histogram[bucket_index].cache_aligend_count = align_to_cacheline(histogram[bucket_index].count);
+    cache_aligned_output_size += histogram[bucket_index].cache_aligend_count;
+  }
+
+  histogram_data.cache_aligned_size = cache_aligned_output_size;
+  return histogram_data;
 }
 
 std::vector<Partition> radix_partition(SimdElementList& simd_elements, HistogramData& histogram_data,
