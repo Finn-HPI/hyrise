@@ -221,6 +221,7 @@ HistogramData compute_histogram(SimdElementList& simd_elements) {
   }
   auto cache_aligned_output_size = std::size_t{0};
   for (auto bucket_index = std::size_t{0}; bucket_index < BUCKET_COUNT; ++bucket_index) {
+    __builtin_prefetch(&histogram[bucket_index], 1, 0);
     histogram[bucket_index].cache_aligend_count = align_to_cacheline(histogram[bucket_index].count);
     cache_aligned_output_size += histogram[bucket_index].cache_aligend_count;
   }
@@ -235,26 +236,30 @@ std::vector<Partition> radix_partition(SimdElementList& simd_elements, Histogram
   auto histogram = histogram_data.histogram;
   output.resize(histogram_data.cache_aligned_size);
 
+  auto* output_start_address = output.data();
+
   auto buffers = simd_sort::simd_vector<CacheLine>(BUCKET_COUNT);  // Cacheline aligned (64-bit).
   buffers[0].data.output_offset = 0;
-  partitions[0].data = output.data();
+  partitions[0].data = output_start_address;
   partitions[0].size = histogram[0].count;
   for (auto bucket_index = std::size_t{1}; bucket_index < BUCKET_COUNT; ++bucket_index) {
+    __builtin_prefetch(&buffers[bucket_index], 1, 0);
     buffers[bucket_index].data.output_offset =
         buffers[bucket_index - 1].data.output_offset + histogram[bucket_index - 1].cache_aligend_count;
-    partitions[bucket_index].data = output.data() + buffers[bucket_index].data.output_offset;
+    partitions[bucket_index].data = output_start_address + buffers[bucket_index].data.output_offset;
     partitions[bucket_index].size = histogram[bucket_index].count;
   }
 
   for (auto& element : simd_elements) {
     const auto bucket_index = element.key & BUCKET_MASK;
+    __builtin_prefetch(&buffers[bucket_index], 1, 0);
     auto& buffer = buffers[bucket_index];
     auto slot = buffer.data.output_offset;
     auto local_offset = slot & (TUPLES_PER_CACHELINE - 1);
 
     buffer.tuples.values[local_offset] = element;
     if (local_offset == TUPLES_PER_CACHELINE - 1) {
-      auto* destination = output.data() + slot - (TUPLES_PER_CACHELINE - 1);
+      auto* destination = output_start_address + slot - (TUPLES_PER_CACHELINE - 1);
       auto* source = &buffer;
       store_cacheline(destination, source);
     }
@@ -262,11 +267,12 @@ std::vector<Partition> radix_partition(SimdElementList& simd_elements, Histogram
   }
 
   for (auto bucket_index = std::size_t{0}; bucket_index < BUCKET_COUNT; ++bucket_index) {
+    __builtin_prefetch(&buffers[bucket_index], 1, 0);
     auto& buffer = buffers[bucket_index];
     auto slot = buffer.data.output_offset;
     auto local_offset = slot & (TUPLES_PER_CACHELINE - 1);
     if (local_offset > 0) {
-      auto* output_address = output.data() + slot - local_offset;
+      auto* output_address = output_start_address + slot - local_offset;
       std::memcpy(output_address, &buffer, local_offset * 8);
     }
   }
@@ -340,41 +346,41 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
   }
 };
 
-template <>
-class JoinSimdSortMerge::JoinSimdSortMergeImpl<pmr_string> : public AbstractReadOnlyOperatorImpl {
- public:
-  JoinSimdSortMergeImpl(JoinSimdSortMerge& sort_merge_join, const std::shared_ptr<const Table>& left_input_table,
-                        const std::shared_ptr<const Table>& right_input_table, ColumnID left_column_id,
-                        ColumnID right_column_id, const PredicateCondition op, JoinMode mode,
-                        const std::vector<OperatorJoinPredicate>& secondary_join_predicates)
-      : _sort_merge_join{sort_merge_join},
-        _left_input_table{left_input_table},
-        _right_input_table{right_input_table},
-        _primary_left_column_id{left_column_id},
-        _primary_right_column_id{right_column_id},
-        _primary_predicate_condition{op},
-        _mode{mode},
-        _secondary_join_predicates{secondary_join_predicates} {}
-
- protected:
-  // NOLINTBEGIN(cppcoreguidelines-avoid-const-or-ref-data-members)
-  JoinSimdSortMerge& _sort_merge_join;
-  const std::shared_ptr<const Table> _left_input_table;
-  const std::shared_ptr<const Table> _right_input_table;
-  const ColumnID _primary_left_column_id;
-  const ColumnID _primary_right_column_id;
-
-  const PredicateCondition _primary_predicate_condition;
-  const JoinMode _mode;
-
-  const std::vector<OperatorJoinPredicate>& _secondary_join_predicates;
-  // NOLINTEND(cppcoreguidelines-avoid-const-or-ref-data-members)
-
- public:
-  std::shared_ptr<const Table> _on_execute() override {
-    std::cout << "execute with pmr_string :)" << std::endl;
-    return nullptr;
-  }
-};
+// template <>
+// class JoinSimdSortMerge::JoinSimdSortMergeImpl<pmr_string> : public AbstractReadOnlyOperatorImpl {
+//  public:
+//   JoinSimdSortMergeImpl(JoinSimdSortMerge& sort_merge_join, const std::shared_ptr<const Table>& left_input_table,
+//                         const std::shared_ptr<const Table>& right_input_table, ColumnID left_column_id,
+//                         ColumnID right_column_id, const PredicateCondition op, JoinMode mode,
+//                         const std::vector<OperatorJoinPredicate>& secondary_join_predicates)
+//       : _sort_merge_join{sort_merge_join},
+//         _left_input_table{left_input_table},
+//         _right_input_table{right_input_table},
+//         _primary_left_column_id{left_column_id},
+//         _primary_right_column_id{right_column_id},
+//         _primary_predicate_condition{op},
+//         _mode{mode},
+//         _secondary_join_predicates{secondary_join_predicates} {}
+//
+//  protected:
+//   // NOLINTBEGIN(cppcoreguidelines-avoid-const-or-ref-data-members)
+//   JoinSimdSortMerge& _sort_merge_join;
+//   const std::shared_ptr<const Table> _left_input_table;
+//   const std::shared_ptr<const Table> _right_input_table;
+//   const ColumnID _primary_left_column_id;
+//   const ColumnID _primary_right_column_id;
+//
+//   const PredicateCondition _primary_predicate_condition;
+//   const JoinMode _mode;
+//
+//   const std::vector<OperatorJoinPredicate>& _secondary_join_predicates;
+//   // NOLINTEND(cppcoreguidelines-avoid-const-or-ref-data-members)
+//
+//  public:
+//   std::shared_ptr<const Table> _on_execute() override {
+//     std::cout << "execute with pmr_string :)" << std::endl;
+//     return nullptr;
+//   }
+// };
 
 }  // namespace hyrise
