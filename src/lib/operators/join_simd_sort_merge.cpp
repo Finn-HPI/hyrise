@@ -19,7 +19,6 @@ constexpr auto BUCKET_MASK = std::size_t{(1u << BUCKET_BITS) - 1};
 constexpr auto BUCKET_COUNT = uint32_t{1u << BUCKET_BITS};
 constexpr auto CACHE_LINE_SIZE = std::size_t{64};
 constexpr auto TUPLES_PER_CACHELINE = CACHE_LINE_SIZE / 8;
-constexpr auto BUFFER_SIZE = CACHE_LINE_SIZE * 6;
 
 using CacheLine = union {
   struct {
@@ -35,8 +34,6 @@ using CacheLine = union {
 constexpr std::size_t align_to_cacheline(std::size_t value) {
   return (value + TUPLES_PER_CACHELINE - 1) & ~(TUPLES_PER_CACHELINE - 1);
 }
-
-using SoftwareManagedBuffer = std::array<SimdElement, BUFFER_SIZE>;
 
 bool JoinSimdSortMerge::supports(const JoinConfiguration config) {
   return config.predicate_condition == PredicateCondition::Equals && config.left_data_type == config.right_data_type &&
