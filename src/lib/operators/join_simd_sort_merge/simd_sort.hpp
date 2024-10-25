@@ -38,7 +38,7 @@ void merge_level(std::size_t level, std::array<T*, 2>& ptrs, std::size_t num_ite
 }
 
 template <std::size_t count_per_vector, typename T>
-inline void __attribute__((always_inline)) simd_sort_chunk(DataChunk<T>& block) {
+inline void __attribute__((always_inline)) sort_chunk(DataChunk<T>& block) {
   const auto num_items = block.size;
   const auto start_level = log2_builtin(count_per_vector);
 
@@ -82,8 +82,8 @@ inline void __attribute__((always_inline)) simd_sort_chunk(DataChunk<T>& block) 
 }
 
 template <std::size_t count_per_vector, typename T>
-inline std::size_t __attribute__((always_inline)) simd_merge_chunk_list(std::vector<DataChunk<T>>& chunk_list,
-                                                                        std::size_t chunk_count) {
+inline std::size_t __attribute__((always_inline)) merge_chunk_list(std::vector<DataChunk<T>>& chunk_list,
+                                                                   std::size_t chunk_count) {
   using TwoWayMerge = TwoWayMerge<count_per_vector, T>;
   auto updated_chunk_count = std::size_t{0};
   const auto last_chunk_index = chunk_count - 1;
@@ -104,7 +104,7 @@ inline std::size_t __attribute__((always_inline)) simd_merge_chunk_list(std::vec
 }
 
 template <std::size_t count_per_vector, typename T>
-inline void __attribute__((always_inline)) simd_sort_incomplete_chunk(DataChunk<T>& chunk) {
+inline void __attribute__((always_inline)) sort_incomplete_chunk(DataChunk<T>& chunk) {
   constexpr auto NORMAL_SORT_THRESHOLD_SIZE = 128;
   auto next_possible_smaller_blocksize = block_size<T>() / 2;
   auto num_remaining_items = chunk.size;
@@ -127,7 +127,7 @@ inline void __attribute__((always_inline)) simd_sort_incomplete_chunk(DataChunk<
   while (next_possible_smaller_blocksize > NORMAL_SORT_THRESHOLD_SIZE) {
     chunk_list.emplace_back(chunk.input + offset, chunk.output + offset, next_possible_smaller_blocksize);
     auto& chunk_info = chunk_list.back();
-    simd_sort_chunk<count_per_vector>(chunk_info);
+    sort_chunk<count_per_vector>(chunk_info);
     std::swap(chunk_info.input, chunk_info.output);
 
     offset += next_possible_smaller_blocksize;
@@ -143,10 +143,9 @@ inline void __attribute__((always_inline)) simd_sort_incomplete_chunk(DataChunk<
     boost::sort::pdqsort(chunk_info.input, chunk_info.input + num_remaining_items);
     ++chunk_count;
   }
-
   // Merge sorted chunks into one sorted list.
   while (chunk_count > 1) {
-    chunk_count = simd_merge_chunk_list<count_per_vector>(chunk_list, chunk_count);
+    chunk_count = merge_chunk_list<count_per_vector>(chunk_list, chunk_count);
   }
   auto& merged_chunk = chunk_list.front();
   chunk.input = merged_chunk.output;
@@ -154,7 +153,7 @@ inline void __attribute__((always_inline)) simd_sort_incomplete_chunk(DataChunk<
 }
 
 template <std::size_t count_per_vector, typename T>
-void simd_sort(T*& input_ptr, T*& output_ptr, std::size_t element_count) {
+void sort(T*& input_ptr, T*& output_ptr, std::size_t element_count) {
   if (element_count <= 0) [[unlikely]] {
     return;
   }
@@ -179,20 +178,20 @@ void simd_sort(T*& input_ptr, T*& output_ptr, std::size_t element_count) {
   const auto chunk_count_without_remaining = chunk_count - (remaining_items > 0);
   for (auto chunk_index = std::size_t{0}; chunk_index < chunk_count_without_remaining; ++chunk_index) {
     auto& chunk = chunk_list[chunk_index];
-    simd_sort_chunk<count_per_vector>(chunk);
+    sort_chunk<count_per_vector>(chunk);
     std::swap(chunk.input, chunk.output);
   }
   if (remaining_items) {
     auto& chunk = chunk_list.back();
     chunk.size = remaining_items;
-    simd_sort_incomplete_chunk<count_per_vector>(chunk);
+    sort_incomplete_chunk<count_per_vector>(chunk);
     std::swap(chunk.input, chunk.output);
   }
   // Next we merge all these chunks iteratively to achieve a global sorting.
   const auto log_n = static_cast<std::size_t>(std::ceil(std::log2(element_count)));
   const auto log_block_size = log2_builtin(BLOCK_SIZE);
   for (auto level_index = log_block_size; level_index < log_n; ++level_index) {
-    chunk_count = simd_merge_chunk_list<count_per_vector>(chunk_list, chunk_count);
+    chunk_count = merge_chunk_list<count_per_vector>(chunk_list, chunk_count);
   }
   auto& merged_chunk = chunk_list.front();
   output_ptr = merged_chunk.input;

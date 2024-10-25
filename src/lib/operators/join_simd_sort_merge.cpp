@@ -2,6 +2,8 @@
 
 #include <boost/functional/hash.hpp>
 
+#include "operators/join_simd_sort_merge/simd_sort.hpp"
+
 #if defined(__x86_64__)
 #include "immintrin.h"
 #endif
@@ -20,6 +22,11 @@ constexpr auto BUCKET_COUNT = uint32_t{1u << BUCKET_BITS};
 constexpr auto CACHE_LINE_SIZE = std::size_t{64};
 constexpr auto TUPLES_PER_CACHELINE = CACHE_LINE_SIZE / 8;
 
+template <typename T>
+using PerHash = std::array<T, BUCKET_COUNT>;
+
+constexpr auto CORE_COUNT = 8;
+
 using CacheLine = union {
   struct {
     std::array<SimdElement, TUPLES_PER_CACHELINE> values;
@@ -32,11 +39,22 @@ using CacheLine = union {
 };
 
 struct Partition {
-  SimdElement* data;
+  SimdElement* data_start_address;
+  std::size_t original_data_offset;
   std::size_t size;
 
+  template <typename T>
+  T* begin() const {
+    return reinterpret_cast<T*>(data_start_address);
+  }
+
+  template <typename T>
+  T* end() const {
+    return reinterpret_cast<T*>(data_start_address + size);
+  }
+
   std::span<SimdElement> elements() const {
-    return {data, data + size};
+    return {data_start_address, data_start_address + size};
   }
 };
 
@@ -212,7 +230,7 @@ void store_cacheline(auto* destination, auto* source) {
 #endif
 }
 
-HistogramData compute_histogram(SimdElementList& simd_elements) {
+HistogramData compute_histogram(std::span<SimdElement> simd_elements) {
   auto histogram_data = HistogramData{};
   auto& histogram = histogram_data.histogram;
 
@@ -230,7 +248,7 @@ HistogramData compute_histogram(SimdElementList& simd_elements) {
   return histogram_data;
 }
 
-std::vector<Partition> radix_partition(SimdElementList& simd_elements, HistogramData& histogram_data,
+std::vector<Partition> radix_partition(std::span<SimdElement> simd_elements, HistogramData& histogram_data,
                                        simd_sort::simd_vector<SimdElement>& output) {
   auto partitions = std::vector<Partition>(BUCKET_COUNT);
   auto histogram = histogram_data.histogram;
@@ -240,19 +258,25 @@ std::vector<Partition> radix_partition(SimdElementList& simd_elements, Histogram
 
   auto buffers = simd_sort::simd_vector<CacheLine>(BUCKET_COUNT);  // Cacheline aligned (64-bit).
   buffers[0].data.output_offset = 0;
-  partitions[0].data = output_start_address;
+  partitions[0].original_data_offset = 0;
   partitions[0].size = histogram[0].count;
+  partitions[0].data_start_address = output_start_address;
+
   for (auto bucket_index = std::size_t{1}; bucket_index < BUCKET_COUNT; ++bucket_index) {
-    __builtin_prefetch(&buffers[bucket_index], 1, 0);
+    // __builtin_prefetch(&buffers[bucket_index], 1, 0);
     buffers[bucket_index].data.output_offset =
         buffers[bucket_index - 1].data.output_offset + histogram[bucket_index - 1].cache_aligend_count;
-    partitions[bucket_index].data = output_start_address + buffers[bucket_index].data.output_offset;
-    partitions[bucket_index].size = histogram[bucket_index].count;
+    auto& partition = partitions[bucket_index];
+    partition.original_data_offset = buffers[bucket_index].data.output_offset;
+    partition.size = histogram[bucket_index].count;
+    partition.data_start_address = output_start_address + buffers[bucket_index].data.output_offset;
+
+    // std::cout << "bucket_index: " << bucket_index << "offset: " << partition.data_offset << std::endl;
   }
 
   for (auto& element : simd_elements) {
     const auto bucket_index = element.key & BUCKET_MASK;
-    __builtin_prefetch(&buffers[bucket_index], 1, 0);
+    // __builtin_prefetch(&buffers[bucket_index], 1, 0);
     auto& buffer = buffers[bucket_index];
     auto slot = buffer.data.output_offset;
     auto local_offset = slot & (TUPLES_PER_CACHELINE - 1);
@@ -267,7 +291,7 @@ std::vector<Partition> radix_partition(SimdElementList& simd_elements, Histogram
   }
 
   for (auto bucket_index = std::size_t{0}; bucket_index < BUCKET_COUNT; ++bucket_index) {
-    __builtin_prefetch(&buffers[bucket_index], 1, 0);
+    // __builtin_prefetch(&buffers[bucket_index], 1, 0);
     auto& buffer = buffers[bucket_index];
     auto slot = buffer.data.output_offset;
     auto local_offset = slot & (TUPLES_PER_CACHELINE - 1);
@@ -276,9 +300,40 @@ std::vector<Partition> radix_partition(SimdElementList& simd_elements, Histogram
       std::memcpy(output_address, &buffer, local_offset * 8);
     }
   }
-
   return partitions;
 }
+
+constexpr std::size_t choose_count_per_vector() {
+  return 4;
+}
+
+template <typename SimdSortType>
+std::vector<Partition> partition_and_sort_partitions(std::size_t thread_index [[maybe_unused]],
+                                                     std::span<SimdElement> elements,
+                                                     simd_sort::simd_vector<SimdElement>& partition_output,
+                                                     simd_sort::simd_vector<SimdElement>& sort_working_memory
+                                                     [[maybe_unused]]) {
+  auto histogram_data = compute_histogram(elements);
+  auto partitions = radix_partition(elements, histogram_data, partition_output);
+
+  const auto count_per_vector = choose_count_per_vector();
+  for (auto& partition : partitions) {
+    if (!partition.size) {
+      continue;
+    }
+    auto* begin = partition.begin<SimdSortType>();
+    auto* cmp = reinterpret_cast<SimdSortType*>(sort_working_memory.data() + partition.original_data_offset);
+    auto* working_mem = reinterpret_cast<SimdSortType*>(sort_working_memory.data() + partition.original_data_offset);
+
+    simd_sort::sort<count_per_vector>(begin, working_mem, partition.size);
+
+    if (working_mem == cmp) {
+      partition.data_start_address = reinterpret_cast<SimdElement*>(cmp);
+    }
+  }
+
+  return partitions;
+};
 
 template <typename T>
 class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperatorImpl {
@@ -322,24 +377,51 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
   std::shared_ptr<const Table> _on_execute() override {
     materialize_column_and_transform_to_simd_format<T>(_left_input_table, _primary_left_column_id,
                                                        _materialized_segments_left, _simd_elements_left);
-    auto histogram_data_left = compute_histogram(_simd_elements_left);
-    auto partitions_left = radix_partition(_simd_elements_left, histogram_data_left, _partitioned_element_left);
 
-    // materialize_column_and_transform_to_simd_format<T>(_right_input_table, _primary_right_column_id,
-    //                                                    _materialized_segments_right, _simd_elements_right);
-    // auto histogram_data_right = compute_histogram(_simd_elements_right);
-    // auto partitions_right = radix_partition(_simd_elements_right, histogram_data_right, _partitioned_element_right);
+    materialize_column_and_transform_to_simd_format<T>(_right_input_table, _primary_right_column_id,
+                                                       _materialized_segments_right, _simd_elements_right);
+    const auto num_items = _simd_elements_left.size();
+    const auto base_size_per_thread = num_items / CORE_COUNT;
+    const auto remainder = num_items % CORE_COUNT;
 
-    auto partition_index = std::size_t{0};
-    for (auto& partition : partitions_left) {
-      if (partition.size == 0) {
-        ++partition_index;
-        continue;
+    auto thread_partition_outputs = std::array<simd_sort::simd_vector<SimdElement>, CORE_COUNT>{};
+    auto thread_sort_outputs = std::array<simd_sort::simd_vector<SimdElement>, CORE_COUNT>{};
+    auto thread_partition_bounds = std::array<std::vector<Partition>, CORE_COUNT>{};
+    auto thread_inputs = std::array<std::span<SimdElement>, CORE_COUNT>{};
+
+    auto* input_start_address = _simd_elements_left.data();
+    for (auto thread_index = std::size_t{0}, offset = std::size_t{0}; thread_index < CORE_COUNT; ++thread_index) {
+      auto current_range_size = base_size_per_thread + (thread_index < remainder ? 1 : 0);
+      thread_inputs[thread_index] = {input_start_address + offset, input_start_address + offset + current_range_size};
+      offset += current_range_size;
+    }
+
+    const auto num_threads = CORE_COUNT;
+    auto tasks = std::vector<std::shared_ptr<AbstractTask>>{};
+    tasks.reserve(num_threads);
+    for (auto thread_index = 0u; thread_index < num_threads; ++thread_index) {
+      tasks.emplace_back(std::make_shared<JobTask>(
+          [thread_index, &thread_inputs, &thread_partition_outputs, &thread_sort_outputs, &thread_partition_bounds]() {
+            thread_partition_bounds[thread_index] = partition_and_sort_partitions<int64_t>(
+                thread_index, thread_inputs[thread_index], thread_partition_outputs[thread_index],
+                thread_sort_outputs[thread_index]);
+          }));
+    }
+    Hyrise::get().scheduler()->schedule_and_wait_for_tasks(tasks);
+
+    for (auto thread_index = 0u; thread_index < num_threads; ++thread_index) {
+      std::cout << "========================================================" << std::endl;
+      std::cout << "thread: " << thread_index << std::endl;
+      auto& partition_bounds = thread_partition_bounds[thread_index];
+      for (std::size_t i = 0; i < BUCKET_COUNT; ++i) {
+        if (partition_bounds[i].size == 0u) {
+          continue;
+        }
+        std::cout << "p: " << i << std::endl;
+        for (auto& element : partition_bounds[i].elements()) {
+          std::cout << element << std::endl;
+        }
       }
-      for (auto& element : partition.elements()) {
-        std::cout << partition_index << ": " << element << std::endl;
-      }
-      ++partition_index;
     }
 
     return nullptr;

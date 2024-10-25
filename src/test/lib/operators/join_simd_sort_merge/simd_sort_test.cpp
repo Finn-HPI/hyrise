@@ -29,7 +29,7 @@ TYPED_TEST(SimdSortTest, SortBlock) {
     EXPECT_TRUE(std::ranges::is_sorted(expected_output));
 
     auto chunk = DataChunk{input.data(), temporal_storage.data(), BLOCK_SIZE};
-    simd_sort_chunk<count_per_vector>(chunk);
+    sort_chunk<count_per_vector>(chunk);
     auto& sorted_data = (chunk.output == temporal_storage.data()) ? temporal_storage : input;
 
     EXPECT_TRUE(std::ranges::is_sorted(sorted_data));
@@ -57,7 +57,7 @@ TYPED_TEST(SimdSortTest, SortIncompleteBlock) {
     EXPECT_TRUE(std::ranges::is_sorted(expected_output));
 
     auto chunk = DataChunk{input.data(), temporal_storage.data(), num_items};
-    simd_sort_incomplete_chunk<count_per_vector>(chunk);
+    sort_incomplete_chunk<count_per_vector>(chunk);
     auto& sorted_data = (chunk.output == temporal_storage.data()) ? temporal_storage : input;
 
     EXPECT_TRUE(std::ranges::is_sorted(sorted_data));
@@ -71,6 +71,39 @@ TYPED_TEST(SimdSortTest, SortIncompleteBlock) {
     test_sort_block.template operator()<4>(scale);
 #ifdef __AVX512F__
     test_sort_block.template operator()<8>(scale);
+#endif
+  }
+}
+
+TYPED_TEST(SimdSortTest, SortCompleteSmall) {
+  auto test_sort = []<std::size_t count_per_vector>(const std::size_t num_items) {
+    auto input = simd_vector<TypeParam>(num_items);
+    auto temporal_storage = simd_vector<TypeParam>(num_items);
+    std::iota(input.begin(), input.end(), 0);
+    std::ranges::reverse(input);
+    if (input.size() > 1) {
+      EXPECT_FALSE(std::ranges::is_sorted(input));
+    }
+    auto expected_output = input;
+    std::ranges::sort(expected_output);
+    EXPECT_TRUE(std::ranges::is_sorted(expected_output));
+    if (input.size() > 1) {
+      EXPECT_FALSE(std::ranges::is_sorted(input));
+    }
+    auto* input_ptr = input.data();
+    auto* output_ptr = temporal_storage.data();
+    sort<count_per_vector>(input_ptr, output_ptr, num_items);
+
+    auto& sorted_data = (output_ptr == temporal_storage.data()) ? temporal_storage : input;
+    EXPECT_EQ(sorted_data.size(), num_items);
+    EXPECT_TRUE(std::ranges::is_sorted(sorted_data));
+    EXPECT_EQ(sorted_data, expected_output);
+  };
+  for (auto num_items = std::size_t{0}; num_items <= 256; ++num_items) {
+    test_sort.template operator()<2>(num_items);
+    test_sort.template operator()<4>(num_items);
+#ifdef __AVX512F__
+    test_sort.template operator()<8>(num_items);
 #endif
   }
 }
@@ -93,7 +126,7 @@ TYPED_TEST(SimdSortTest, SortComplete) {
 
     auto* input_ptr = input.data();
     auto* output_ptr = temporal_storage.data();
-    simd_sort<count_per_vector>(input_ptr, output_ptr, num_items);
+    sort<count_per_vector>(input_ptr, output_ptr, num_items);
 
     auto& sorted_data = (output_ptr == temporal_storage.data()) ? temporal_storage : input;
     EXPECT_EQ(sorted_data.size(), num_items);
