@@ -15,11 +15,12 @@ namespace hyrise {
 constexpr auto THREAD_COUNT = 8;
 
 struct SimdElement {
-  uint32_t key;
   uint32_t index;
+  uint32_t key;
 
   friend std::ostream& operator<<(std::ostream& stream, const SimdElement& element) {
-    stream << "SimdElement(" << element.key << "," << element.index << ")";
+    auto cmp_value = std::bit_cast<int64_t>(element);
+    stream << "SimdElement(" << element.key << "," << element.index << ") cmp: " << cmp_value;
     return stream;
   }
 };

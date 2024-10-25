@@ -15,20 +15,8 @@ constexpr auto PARTITION_SIZE = uint32_t{1u << RADIX_BITS};
 constexpr auto CACHE_LINE_SIZE = std::size_t{64};
 constexpr auto TUPLES_PER_CACHELINE = CACHE_LINE_SIZE / 8;
 
-using CacheLine = union {
-  struct {
-    std::array<SimdElement, TUPLES_PER_CACHELINE> values;
-  } tuples;
-
-  struct {
-    std::array<SimdElement, TUPLES_PER_CACHELINE - 1> values;
-    std::size_t output_offset;
-  } data;
-};
-
 struct Partition {
   SimdElement* data;
-  std::size_t original_data_offset;
   std::size_t size;
 
   template <typename T>
@@ -46,16 +34,6 @@ struct Partition {
   }
 };
 
-using BucketData = struct {
-  std::size_t count;
-  std::size_t cache_aligend_count;
-};
-
-using HistogramData = struct {
-  std::array<BucketData, PARTITION_SIZE> histogram;
-  std::size_t cache_aligned_size;
-};
-
 template <typename T>
 using cache_aligned_vector = simd_sort::simd_vector<T>;
 
@@ -66,10 +44,32 @@ struct RadixPartition {
   RadixPartition() = default;
 
  protected:
+  using CacheLine = union {
+    struct {
+      std::array<SimdElement, TUPLES_PER_CACHELINE> values;
+    } tuples;
+
+    struct {
+      std::array<SimdElement, TUPLES_PER_CACHELINE - 1> values;
+      std::size_t output_offset;
+    } data;
+  };
+
+  using BucketData = struct {
+    std::size_t count;
+    std::size_t cache_aligend_count;
+  };
+
+  using HistogramData = struct {
+    std::array<BucketData, PARTITION_SIZE> histogram;
+    std::size_t cache_aligned_size;
+  };
+
   bool _has_data = false;
   bool _executed = false;
   std::span<SimdElement> _elements;
   std::vector<Partition> _partitions;
+  std::vector<std::size_t> _partiton_offsets;
   cache_aligned_vector<SimdElement> _partitioned_output;
   cache_aligned_vector<SimdElement> _working_memory;
 
@@ -122,6 +122,7 @@ struct RadixPartition {
     DebugAssert(_has_data, "No input data to partition.");
     DebugAssert(!_executed, "RadixPartition execute can only be called once.");
     _partitions.resize(PARTITION_SIZE);
+    _partiton_offsets.resize(PARTITION_SIZE);
 
     auto histogram_data = _compute_histogram();
     auto histogram = histogram_data.histogram;
@@ -129,19 +130,21 @@ struct RadixPartition {
 
     auto* output_start_address = _partitioned_output.data();
 
-    auto buffers = simd_sort::simd_vector<CacheLine>(PARTITION_SIZE);  // Cacheline aligned (64-bit).
+    auto buffers = cache_aligned_vector<CacheLine>(PARTITION_SIZE);  // Cacheline aligned (64-bit).
     buffers[0].data.output_offset = 0;
-    _partitions[0].original_data_offset = 0;
     _partitions[0].size = histogram[0].count;
     _partitions[0].data = output_start_address;
+    _partiton_offsets[0] = 0;
 
     for (auto bucket_index = std::size_t{1}; bucket_index < PARTITION_SIZE; ++bucket_index) {
+      __builtin_prefetch(&buffers[bucket_index - 1], 1, 0);
       __builtin_prefetch(&buffers[bucket_index], 1, 0);
+
       buffers[bucket_index].data.output_offset =
           buffers[bucket_index - 1].data.output_offset + histogram[bucket_index - 1].cache_aligend_count;
 
       auto& partition = _partitions[bucket_index];
-      partition.original_data_offset = buffers[bucket_index].data.output_offset;
+      _partiton_offsets[bucket_index] = buffers[bucket_index].data.output_offset;
       partition.size = histogram[bucket_index].count;
       partition.data = output_start_address + buffers[bucket_index].data.output_offset;
     }
@@ -184,7 +187,7 @@ struct RadixPartition {
     return _partitioned_output.size();
   }
 
-  Partition& get_partition(std::size_t index) {
+  Partition& partition(std::size_t index) {
     DebugAssert(_executed, "Do not call before execute.");
     DebugAssert(index >= 0 && index < num_partitions(), "Invalid partition index.");
     return _partitions[index];
@@ -196,8 +199,10 @@ struct RadixPartition {
   }
 
   template <typename T>
-  T* get_working_memory(Partition& partition) {
-    return reinterpret_cast<T*>(_working_memory.data() + partition.original_data_offset);
+  T* get_working_memory(std::size_t partition_index) {
+    DebugAssert(_executed, "Do not call before execute.");
+    DebugAssert(partition_index >= 0 && partition_index < num_partitions(), "Invalid partition index.");
+    return reinterpret_cast<T*>(_working_memory.data() + _partiton_offsets[partition_index]);
   }
 };
 
