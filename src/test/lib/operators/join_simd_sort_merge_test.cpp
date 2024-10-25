@@ -106,7 +106,7 @@ TEST_F(OperatorsJoinSimdSortMergeTest, IntJoinColumn) {
   }
 }
 
-TEST_F(OperatorsJoinSimdSortMergeTest, RadixPartitionAndSort) {
+TEST_F(OperatorsJoinSimdSortMergeTest, IntRadixPartitionAndSort) {
   const auto test_table = std::make_shared<Table>(
       TableColumnDefinitions{{"a", DataType::Int, false}, {"b", DataType::Int, false}, {"c", DataType::Int, false}},
       TableType::Data);
@@ -115,6 +115,36 @@ TEST_F(OperatorsJoinSimdSortMergeTest, RadixPartitionAndSort) {
   for (auto i = int{num_items}; i >= 0; --i) {
     test_table->append({i, i, i});
   }
+  // for (auto i = int{0}; i <= num_items; ++i) {
+  //   test_table->append({i, i, i});
+  // }
+
+  const auto test_input = std::make_shared<TableWrapper>(test_table);
+  test_input->never_clear_output();
+  test_input->execute();
+  const auto primary_predicate = OperatorJoinPredicate{{ColumnID{0}, ColumnID{1}}, PredicateCondition::Equals};
+
+  // For inner joins, both join columns are clustered
+  {
+    const auto join_operator =
+        std::make_shared<JoinSimdSortMerge>(test_input, test_input, JoinMode::Inner, primary_predicate);
+    join_operator->execute();
+  }
+}
+
+TEST_F(OperatorsJoinSimdSortMergeTest, FloatRadixPartitionAndSort) {
+  EXPECT_TRUE(true);
+  const auto test_table = std::make_shared<Table>(
+      TableColumnDefinitions{
+          {"a", DataType::Float, false}, {"b", DataType::Float, false}, {"c", DataType::Float, false}},
+      TableType::Data);
+
+  const auto num_items = 1024 * 8;
+  for (auto index = int{num_items}; index >= 0; --index) {
+    auto val = static_cast<float>(index);
+    test_table->append({val, val, val});
+  }
+
   // for (auto i = int{0}; i <= num_items; ++i) {
   //   test_table->append({i, i, i});
   // }

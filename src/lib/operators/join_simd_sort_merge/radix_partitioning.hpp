@@ -127,6 +127,7 @@ struct RadixPartition {
     auto histogram_data = _compute_histogram();
     auto histogram = histogram_data.histogram;
     _partitioned_output.resize(histogram_data.cache_aligned_size);
+    _working_memory.resize(histogram_data.cache_aligned_size);
 
     auto* output_start_address = _partitioned_output.data();
 
@@ -202,6 +203,7 @@ struct RadixPartition {
   T* get_working_memory(std::size_t partition_index) {
     DebugAssert(_executed, "Do not call before execute.");
     DebugAssert(partition_index >= 0 && partition_index < num_partitions(), "Invalid partition index.");
+    DebugAssert(_partiton_offsets[partition_index] % 8 == 0, "Offset has to be cache_aligned.");
     return reinterpret_cast<T*>(_working_memory.data() + _partiton_offsets[partition_index]);
   }
 };

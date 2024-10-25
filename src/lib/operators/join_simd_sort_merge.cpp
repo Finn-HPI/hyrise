@@ -174,15 +174,18 @@ RadixPartition construct_and_sort_partitions(std::span<SimdElement> elements) {
   auto radix_partitioner = RadixPartition(elements);
   radix_partitioner.execute();
 
-  const auto count_per_vector = choose_count_per_vector();
   const auto num_partitions = RadixPartition::num_partitions();
   for (auto partition_index = std::size_t{0}; partition_index < num_partitions; ++partition_index) {
     auto& partition = radix_partitioner.partition(partition_index);
     if (!partition.size) {
       continue;
     }
+    const auto count_per_vector = choose_count_per_vector();
     auto* input_pointer = partition.begin<SimdSortType>();
     auto* output_pointer = radix_partitioner.get_working_memory<SimdSortType>(partition_index);
+    DebugAssert((simd_sort::is_simd_aligned<SimdSortType, 64>(input_pointer)), "Input not cache aligned.");
+    DebugAssert((simd_sort::is_simd_aligned<SimdSortType, 64>(output_pointer)), "Output not cache aligned.");
+
     simd_sort::sort<count_per_vector>(input_pointer, output_pointer, partition.size);
     partition.data = reinterpret_cast<SimdElement*>(output_pointer);
   }
@@ -208,17 +211,23 @@ void sort_relation(SimdElementList& simd_elements) {
   }
 
   // Each section is assigned to a thread, which when radix partitions the input and sorts each partition.
-  const auto num_threads = THREAD_COUNT;
   spawn_and_wait_per_thread(thread_inputs, [&thread_partitions](auto& elements, std::size_t thread_index) {
     thread_partitions[thread_index] = construct_and_sort_partitions<SortingType>(elements);
   });
+
+  const auto num_threads = THREAD_COUNT;
 
   // DebugAssert that each partition is sorted correctly.
   for (auto thread_index = 0u; thread_index < num_threads; ++thread_index) {
     const auto& partitions = thread_partitions[thread_index].partitions();
     for (auto partition : partitions) {
       DebugAssert(std::is_sorted(partition.begin<SortingType>(), partition.end<SortingType>()),
-                  "Partition was not sorted");
+                  "Partition was not sorted correctly.");
+      DebugAssert(std::is_sorted(partition.begin<SimdElement>(), partition.end<SimdElement>(),
+                                 [](const auto& left, const auto& right) {
+                                   return static_cast<uint64_t>(left.key) < static_cast<uint64_t>(right.key);
+                                 }),
+                  "Partition was not sorted according to key.");
     }
   }
 
@@ -289,7 +298,7 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
 
     using SortingType = int64_t;
     sort_relation<SortingType>(_simd_elements_left);
-    // sort_relation<SortingType>(_simd_elements_right);
+    sort_relation<SortingType>(_simd_elements_right);
 
     return nullptr;
   }

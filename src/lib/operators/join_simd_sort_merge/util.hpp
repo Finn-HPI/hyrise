@@ -3,12 +3,9 @@
 #include <array>
 #include <vector>
 
-#include "all_type_variant.hpp"
-#include "expression/window_function_expression.hpp"
 #include "hyrise.hpp"
 #include "scheduler/abstract_task.hpp"
 #include "scheduler/job_task.hpp"
-#include "types.hpp"
 
 namespace hyrise {
 
