@@ -3,17 +3,8 @@
 #include "abstract_join_operator.hpp"
 #include "operator_join_predicate.hpp"
 #include "operators/join_simd_sort_merge/simd_utils.hpp"
+#include "operators/join_simd_sort_merge/util.hpp"
 #include "types.hpp"
-
-struct SimdElement {
-  uint32_t key;
-  uint32_t index;
-
-  friend std::ostream& operator<<(std::ostream& stream, const SimdElement& element) {
-    stream << "SimdElement(" << element.key << "," << element.index << ")";
-    return stream;
-  }
-};
 
 namespace hyrise {
 using SimdElementList = simd_sort::simd_vector<SimdElement>;
