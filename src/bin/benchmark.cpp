@@ -174,7 +174,7 @@ void benchmark(const std::size_t scale, const std::size_t num_warumup_runs, cons
       static_cast<double>(avg_duration_std_sort) / static_cast<double>(avg_duration_simd_sort);
 
   const auto simd_speedup_pdq_sort =
-      static_cast<double>(avg_duration_pdq_sort) / static_cast<double>(avg_duration_pdq_sort);
+      static_cast<double>(avg_duration_pdq_sort) / static_cast<double>(avg_duration_simd_sort);
 
   out << scale << "," << avg_duration_std_sort << "," << avg_duration_pdq_sort << "," << avg_duration_simd_sort << ","
       << simd_speedup_std_sort << "," << simd_speedup_pdq_sort << std::endl;

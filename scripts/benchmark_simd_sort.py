@@ -49,7 +49,7 @@ def create_and_build(directory, system_name, l2_cache_size, build_mode):
         raise ValueError(f"Unknown system name: {system_name}")
     
     # Run the cmake command as a single string
-    process = subprocess.Popen(cmake_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    process = subprocess.Popen(cmake_command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     # Read output line by line in real time
     while True:
         output = process.stdout.readline()
@@ -62,7 +62,7 @@ def create_and_build(directory, system_name, l2_cache_size, build_mode):
     process.wait()
 
     
-    process = subprocess.Popen('ninja hyriseBenchmarkSIMD', stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    process = subprocess.Popen('ninja hyriseBenchmarkSIMD', shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     # Read output line by line in real time
     while True:
         output = process.stdout.readline()
@@ -199,7 +199,7 @@ if __name__ == "__main__":
     print("Start benchmark.")
 
     command = [
-        './benchmark',  # Replace with the path to your benchmark executable if necessary
+        './hyriseBenchmarkSIMD',  # Replace with the path to your benchmark executable if necessary
         '-c', str(args.cpr),
         '-t', args.dt,
         '-w', str(args.warumup),

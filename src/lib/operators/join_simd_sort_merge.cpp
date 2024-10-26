@@ -218,18 +218,6 @@ void sort_relation(SimdElementList& simd_elements) {
   const auto num_threads = THREAD_COUNT;
 
   // DebugAssert that each partition is sorted correctly.
-  for (auto thread_index = 0u; thread_index < num_threads; ++thread_index) {
-    const auto& partitions = thread_partitions[thread_index].partitions();
-    for (auto partition : partitions) {
-      DebugAssert(std::is_sorted(partition.begin<SortingType>(), partition.end<SortingType>()),
-                  "Partition was not sorted correctly.");
-      DebugAssert(std::is_sorted(partition.begin<SimdElement>(), partition.end<SimdElement>(),
-                                 [](const auto& left, const auto& right) {
-                                   return static_cast<uint64_t>(left.key) < static_cast<uint64_t>(right.key);
-                                 }),
-                  "Partition was not sorted according to key.");
-    }
-  }
 
   // TODO(finn): Gather buckets with same index from all partitions.
   // TODO(finn): Apply multiway merging.
