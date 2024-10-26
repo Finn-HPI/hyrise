@@ -137,8 +137,8 @@ def plot(l2_cache_size, result_file, output_name):
     
     ax2.set_ylabel('Speedup', color='black')
     ax2.tick_params(axis='y', labelcolor='black')
-    ax2.set_ylim(bottom=1)  # Set the lower limit to 1
-    ax2.set_ylim(1, 2 * max(df['simd_speedup_sort'].max(), df['simd_speedup_pdqsort'].max()))
+    ax2.set_ylim(bottom=0.5)  # Set the lower limit to 1
+    # ax2.set_ylim(1, 2 * max(df['simd_speedup_sort'].max(), df['simd_speedup_pdqsort'].max()))
 
     # Show legends
     ax1.legend(loc='upper left')
