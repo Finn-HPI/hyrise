@@ -93,9 +93,9 @@ def get_cpu_model():
         print(f"Error while running lscpu: {e}")
         return None
 
-def plot(l2_cache_size):
+def plot(l2_cache_size, result_file, output_name):
     print("Generating plot.")
-    df = pd.read_csv('result.csv', header=None, 
+    df = pd.read_csv(result_file, header=None, 
                      names=['scale', 'time_sort', 'time_pdqsort', 'time_simd_sort', 'simd_speedup_sort', 'simd_speedup_pdqsort'])
     
     # Calculate num_values and throughputs
@@ -147,7 +147,7 @@ def plot(l2_cache_size):
     # Show the plot
     plt.tight_layout()
     # plt.show()
-    plt.savefig('plot.png')
+    plt.savefig(output_name)
 
 if __name__ == "__main__":
     # Parse command-line arguments
@@ -163,7 +163,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     print("Chosen configuration:")
-    print(f"Directory to create: {args.directory}")
+    print(f"Name: {args.directory}")
     print(f"System architecture: {args.system_name}")
     print(f"Element count per SIMD register: {args.cpr}")
     print(f"Element data type: {args.dt}")
@@ -172,17 +172,19 @@ if __name__ == "__main__":
     print(f"L2 Cache Size: {args.l2_cache_size} KiB")
     print(f"Build mode: {args.build_mode}")
 
+    build_dir = "bench_build"
+
      # Create the directory if it doesn't exist
-    os.makedirs(args.directory, exist_ok=True)
+    os.makedirs(bench_build, exist_ok=True)
     
     # Move into the directory
-    os.chdir(args.directory)
+    os.chdir(bench_build)
     
     # Export configuration to config.txt
-    config_path = os.path.join('config.txt')
+    config_path = os.path.join(args.directory + '_config.txt')
     with open(config_path, 'w') as config_file:
         config_file.write("Chosen configuration:\n")
-        config_file.write(f"Directory to create: {args.directory}\n")
+        config_file.write(f"Name: {args.directory}\n")
         config_file.write(f"System: {args.system_name}\n")
         config_file.write(f"Element count per SIMD register: {args.cpr}\n")
         config_file.write(f"Element data type: {args.dt}\n")
@@ -222,6 +224,10 @@ if __name__ == "__main__":
     stderr_output = process.stderr.read()
     if stderr_output:
        print(stderr_output, end='')
-    plot(args.l2_cache_size)
+
+    result_file = args.directory + "_result.csv";
+    os.rename("result.csv", result_file)
+    output_name = args.directory + "plot.png"
+    plot(args.l2_cache_size, result_file, output_name)
     
   
