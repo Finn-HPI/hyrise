@@ -187,7 +187,7 @@ if __name__ == "__main__":
         config_file.write("Chosen configuration:\n")
         config_file.write(f"Build directory: {args.directory}\n")
         config_file.write(f"Run name: {args.run_name}\n")
-        config_file.write(f"System: {args.run_name}\n")
+        config_file.write(f"System: {args.system_name}\n")
         config_file.write(f"Element count per SIMD register: {args.cpr}\n")
         config_file.write(f"Element data type: {args.dt}\n")
         config_file.write(f"Number of warmup runs: {args.warumup}\n")
