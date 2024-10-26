@@ -8,6 +8,7 @@
 
 #include "cxxopts.hpp"
 
+#include "boost/sort/pdqsort/pdqsort.hpp"
 #include "operators/join_simd_sort_merge/simd_sort.hpp"
 
 template <typename T>
@@ -29,7 +30,6 @@ void benchmark(const std::size_t scale, const std::size_t num_warumup_runs, cons
   using std::chrono::high_resolution_clock;
   using std::chrono::milliseconds;
 
-  using hyrise::simd_sort::simd_sort;
   using hyrise::simd_sort::simd_vector;
 
   std::cout << "Running benchmark for scale: " << scale << " ..." << std::endl;
@@ -45,6 +45,7 @@ void benchmark(const std::size_t scale, const std::size_t num_warumup_runs, cons
 
   auto data = simd_vector<KeyType>(num_items);
   auto data_std_sort = simd_vector<KeyType>(num_items);
+  auto data_pdq_sort = simd_vector<KeyType>(num_items);
   auto data_simd_sort = simd_vector<KeyType>(num_items);
   auto output_simd_sort = simd_vector<KeyType>(num_items);
 
@@ -55,8 +56,10 @@ void benchmark(const std::size_t scale, const std::size_t num_warumup_runs, cons
   Assert(!std::ranges::is_sorted(data), "Data has to be 32-byte aligend.");
 
   std::vector<uint64_t> runtimes_std_sort;
+  std::vector<uint64_t> runtimes_pdq_sort;
   std::vector<uint64_t> runtimes_simd_sort;
   runtimes_std_sort.reserve(num_runs);
+  runtimes_pdq_sort.reserve(num_runs);
   runtimes_simd_sort.reserve(num_runs);
 
   auto* input_ptr = data_simd_sort.data();
@@ -67,6 +70,7 @@ void benchmark(const std::size_t scale, const std::size_t num_warumup_runs, cons
     std::cout << "run: " << run_index << std::endl;
     for (auto index = std::size_t{0}; index < num_items; ++index) {
       data_std_sort[index] = data[index];
+      data_pdq_sort[index] = data[index];
       data_simd_sort[index] = data[index];
     }
     std::cout << "start std::sort" << std::endl;
@@ -93,6 +97,28 @@ void benchmark(const std::size_t scale, const std::size_t num_warumup_runs, cons
     const uint64_t runtime_std_sort =
         std::chrono::duration_cast<std::chrono::milliseconds>(end_std_sort - start_std_sort).count();
 
+    for (volatile auto& elem : data_pdq_sort) {
+      (void)elem;  // Prevents unused variable warning
+                   // Access element to bring it into cache
+    }
+    //////////////////////////////
+    /// START TIMING boost::pdqsort ///
+    //////////////////////////////
+
+    auto start_pdq_sort = std::chrono::steady_clock::now();
+    boost::sort::pdqsort(data_pdq_sort.begin(), data_pdq_sort.end());
+    auto end_pdq_sort = std::chrono::steady_clock::now();
+
+    // NOLINTNEXTLINE
+    asm volatile("" : : "r"(data_pdq_sort.data()) : "memory");  // Ensures std::sort is not optimized away
+
+    /////////////////////////////
+    /// END TIMING boost::pdqsort  ///
+    /////////////////////////////
+
+    const uint64_t runtime_pdq_sort =
+        std::chrono::duration_cast<std::chrono::milliseconds>(end_pdq_sort - start_pdq_sort).count();
+
     input_ptr = data_simd_sort.data();
     output_ptr = output_simd_sort.data();
 
@@ -108,7 +134,7 @@ void benchmark(const std::size_t scale, const std::size_t num_warumup_runs, cons
     //////////////////////////////
 
     auto start_simd_sort = std::chrono::steady_clock::now();
-    simd_sort<count_per_vector>(input_ptr, output_ptr, num_items);
+    hyrise::simd_sort::sort<count_per_vector>(input_ptr, output_ptr, num_items);
     auto end_simd_sort = std::chrono::steady_clock::now();
 
     /////////////////////////////
@@ -121,12 +147,14 @@ void benchmark(const std::size_t scale, const std::size_t num_warumup_runs, cons
     auto& sorted_data = (output_ptr == output_simd_sort.data()) ? output_simd_sort : data_simd_sort;
     Assert(std::ranges::is_sorted(sorted_data), "The simd_sort did not produce a sorted result");
     Assert(sorted_data == data_std_sort, "Ouput of simd_sort is not the same as std::sort.");
+    Assert(sorted_data == data_pdq_sort, "Output of simd_sort is not the same as boost::pdqsort.");
 
     if (run_index < num_warumup_runs) {
       // Skip warm-up runs
       continue;
     }
     runtimes_std_sort.push_back(runtime_std_sort);
+    runtimes_pdq_sort.push_back(runtime_pdq_sort);
     runtimes_simd_sort.push_back(runtime_simd_sort);
   }
 
@@ -134,11 +162,22 @@ void benchmark(const std::size_t scale, const std::size_t num_warumup_runs, cons
   const double avg_duration_std_sort =
       static_cast<double>(total_duration_std_sort) / static_cast<double>(runtimes_std_sort.size());
 
+  const auto total_duration_pdq_sort = std::accumulate(runtimes_pdq_sort.begin(), runtimes_pdq_sort.end(), 0ul);
+  const double avg_duration_pdq_sort =
+      static_cast<double>(total_duration_pdq_sort) / static_cast<double>(runtimes_pdq_sort.size());
+
   const auto total_duration_simd_sort = std::accumulate(runtimes_simd_sort.begin(), runtimes_simd_sort.end(), 0ul);
   const double avg_duration_simd_sort =
       static_cast<double>(total_duration_simd_sort) / static_cast<double>(runtimes_simd_sort.size());
-  const auto speed_up = static_cast<double>(avg_duration_std_sort) / static_cast<double>(avg_duration_simd_sort);
-  out << scale << "," << avg_duration_std_sort << "," << avg_duration_simd_sort << "," << speed_up << std::endl;
+
+  const auto simd_speedup_std_sort =
+      static_cast<double>(avg_duration_std_sort) / static_cast<double>(avg_duration_simd_sort);
+
+  const auto simd_speedup_pdq_sort =
+      static_cast<double>(avg_duration_pdq_sort) / static_cast<double>(avg_duration_pdq_sort);
+
+  out << scale << "," << avg_duration_std_sort << "," << avg_duration_pdq_sort << "," << avg_duration_simd_sort << ","
+      << simd_speedup_std_sort << "," << simd_speedup_pdq_sort << std::endl;
 }
 
 int main(int argc, char* argv[]) {
@@ -171,7 +210,21 @@ int main(int argc, char* argv[]) {
   const auto num_warumup_runs = result["warmup"].as<std::size_t>();
   const auto num_runs = result["runs"].as<std::size_t>();
 
-  if (count_per_vector == 4) {
+  if (count_per_vector == 8) {
+#ifdef __AVX512F__
+    if (key_type == "double") {
+      for (auto scale = std::size_t{1}; scale <= 256; scale *= 2) {
+        benchmark<8, double>(scale, num_warumup_runs, num_runs, output_file);
+      }
+    } else if (key_type == "int64_t") {
+      for (auto scale = std::size_t{1}; scale <= 256; scale *= 2) {
+        benchmark<8, int64_t>(scale, num_warumup_runs, num_runs, output_file);
+      }
+    }
+#else
+    std::cout << "Benchmark with count_per_vector = 8 is not supported on the target system." << std::endl;
+#endif
+  } else if (count_per_vector == 4) {
     if (key_type == "double") {
       for (auto scale = std::size_t{1}; scale <= 256; scale *= 2) {
         benchmark<4, double>(scale, num_warumup_runs, num_runs, output_file);
