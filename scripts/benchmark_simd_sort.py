@@ -153,6 +153,7 @@ if __name__ == "__main__":
     # Parse command-line arguments
     parser = argparse.ArgumentParser(description="Create a build directory and run CMake for the specified system.")
     parser.add_argument("directory", type=str, help="The name of the directory to create.")
+    parser.add_argument("run_name", type=str, help="The name of the run.")
     parser.add_argument("system_name", type=str, choices=["AVX2", "AVX-512", "Gracehopper", "Power10"], help="The system architecture.")
     parser.add_argument('-c', '--cpr', type=int, default=4, help='Element count per SIMD register (default: 4)')
     parser.add_argument('-t', '--dt', type=str, default='double', help='Element data type (default: double)')
@@ -163,7 +164,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     print("Chosen configuration:")
-    print(f"Name: {args.directory}")
+    print(f"Build directory: {args.directory}")
+    print(f"Run name: {args.run_name}")
     print(f"System architecture: {args.system_name}")
     print(f"Element count per SIMD register: {args.cpr}")
     print(f"Element data type: {args.dt}")
@@ -172,20 +174,20 @@ if __name__ == "__main__":
     print(f"L2 Cache Size: {args.l2_cache_size} KiB")
     print(f"Build mode: {args.build_mode}")
 
-    build_dir = "bench_build"
 
      # Create the directory if it doesn't exist
-    os.makedirs(bench_build, exist_ok=True)
+    os.makedirs(args.directory, exist_ok=True)
     
     # Move into the directory
-    os.chdir(bench_build)
+    os.chdir(args.directory)
     
     # Export configuration to config.txt
-    config_path = os.path.join(args.directory + '_config.txt')
+    config_path = os.path.join(args.run_name + '_config.txt')
     with open(config_path, 'w') as config_file:
         config_file.write("Chosen configuration:\n")
-        config_file.write(f"Name: {args.directory}\n")
-        config_file.write(f"System: {args.system_name}\n")
+        config_file.write(f"Build directory: {args.directory}\n")
+        config_file.write(f"Run name: {args.run_name}\n")
+        config_file.write(f"System: {args.run_name}\n")
         config_file.write(f"Element count per SIMD register: {args.cpr}\n")
         config_file.write(f"Element data type: {args.dt}\n")
         config_file.write(f"Number of warmup runs: {args.warumup}\n")
@@ -225,9 +227,9 @@ if __name__ == "__main__":
     if stderr_output:
        print(stderr_output, end='')
 
-    result_file = args.directory + "_result.csv";
+    result_file = args.run_name + "_result.csv";
     os.rename("result.csv", result_file)
-    output_name = args.directory + "plot.png"
+    output_name = args.run_name + "_plot.png"
     plot(args.l2_cache_size, result_file, output_name)
     
   
