@@ -49,16 +49,31 @@ def create_and_build(directory, system_name, l2_cache_size, build_mode):
         raise ValueError(f"Unknown system name: {system_name}")
     
     # Run the cmake command as a single string
-    cmake_result = subprocess.run(cmake_command, shell=True, capture_output=True, text=True)
+    process = subprocess.Popen(cmake_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    # Read output line by line in real time
+    while True:
+        output = process.stdout.readline()
+        if output == '' and process.poll() is not None:
+         break
+        if output:
+          print(output, end='')  # Print output as it comes in
+
+    # Wait for the process to finish
+    process.wait()
+
     
-    if cmake_result.returncode != 0:
-        return cmake_result.stdout, cmake_result.stderr
-    
-    # Run the ninja build command
-    ninja_result = subprocess.run('ninja hyriseBenchmarkSIMD', shell=True, capture_output=True, text=True)
-    
-    # Return the output and errors for both commands
-    return cmake_result.stdout + ninja_result.stdout, cmake_result.stderr + ninja_result.stderr
+    process = subprocess.Popen('ninja hyriseBenchmarkSIMD', stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    # Read output line by line in real time
+    while True:
+        output = process.stdout.readline()
+        if output == '' and process.poll() is not None:
+         break
+        if output:
+          print(output, end='')  # Print output as it comes in
+
+    # Wait for the process to finish
+    process.wait()
+  
 
 def get_cpu_model():
     try:
@@ -179,11 +194,7 @@ if __name__ == "__main__":
     print(f"Configuration exported to {config_path}\n")
 
     # Call the create_and_build function with the provided arguments
-    output, errors = create_and_build(args.directory, args.system_name, 1024 * args.l2_cache_size, args.build_mode)
-
-    # Print the build output and errors
-    print("Output:\n", output)
-    print("Errors:\n", errors)
+    create_and_build(args.directory, args.system_name, 1024 * args.l2_cache_size, args.build_mode)
 
     print("Start benchmark.")
 
