@@ -504,7 +504,6 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
                                                       const PotentialMatchRange& right_range,
                                                       MultiPredicateJoinEvaluator& multi_predicate_join_evaluator) {
     DebugAssert(_primary_predicate_condition == PredicateCondition::Equals, "Primary predicate has to be Equals.");
-
     auto matched_right_row_ids = RowHashSet{};
 
     left_range.for_every_row_id(_materialized_values_left, [&](const RowID left_row_id, const ColumnType& left_value) {
@@ -513,6 +512,7 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
           _materialized_values_right, [&](const RowID right_row_id, const ColumnType& right_value) {
             if (multi_predicate_join_evaluator.satisfies_all_predicates(left_row_id, right_row_id) &&
                 left_value == right_value) {
+              _emit_combination(bucket_index, left_row_id, right_row_id);
               left_row_id_matched = true;
               matched_right_row_ids.insert(right_row_id);
             }
