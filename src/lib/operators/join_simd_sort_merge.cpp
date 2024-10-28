@@ -2,13 +2,16 @@
 
 #include <boost/functional/hash.hpp>
 
+#include "operators/join_helper/join_output_writing.hpp"
 #include "operators/join_simd_sort_merge/radix_partitioning.hpp"
 #include "operators/join_simd_sort_merge/simd_sort.hpp"
+#include "operators/multi_predicate_join/multi_predicate_join_evaluator.hpp"
 
 #if defined(__x86_64__)
 #include "immintrin.h"
 #endif
 
+#include <iterator>
 #include <span>
 
 #include "operators/join_simd_sort_merge/column_materializer.hpp"
@@ -78,15 +81,16 @@ struct Data32BitCompression<hyrise::pmr_string> {
     return key;
   }
 };
+
 }  // namespace
 
 namespace hyrise {
 
-using Partition = radix_partition::Partition;
+using namespace radix_partition;
 
 bool JoinSimdSortMerge::supports(const JoinConfiguration config) {
   return config.predicate_condition == PredicateCondition::Equals && config.left_data_type == config.right_data_type &&
-         config.join_mode == JoinMode::Inner;
+         (config.join_mode == JoinMode::Inner || config.join_mode == JoinMode::Left);
 }
 
 JoinSimdSortMerge::JoinSimdSortMerge(const std::shared_ptr<const AbstractOperator>& left,
@@ -142,19 +146,22 @@ const std::string& JoinSimdSortMerge::name() const {
 
 template <typename T>
 void materialize_column_and_transform_to_simd_format(const std::shared_ptr<const Table> table, const ColumnID column_id,
-                                                     MaterializedSegmentList<T>& materialized_segments,
-                                                     SimdElementList& simd_element_list) {
+                                                     std::vector<MaterializedValue<T>>& materialized_values,
+                                                     SimdElementList& simd_element_list, RowIDPosList& null_values,
+                                                     const bool materialize_null) {
   auto left_column_materializer = SMJColumnMaterializer<T>(JoinSimdSortMerge::JOB_SPAWN_THRESHOLD);
-  auto [_materialized_segments, min_value, max_value] = left_column_materializer.materialize(table, column_id);
-  materialized_segments = std::move(_materialized_segments);
-  simd_element_list.reserve(materialized_segments.size());
+  auto [materialized_segments, min_value, max_value, null_rows] =
+      left_column_materializer.materialize(table, column_id, materialize_null);
+  null_values = std::move(null_rows);
 
+  simd_element_list.reserve(materialized_segments.size());
   auto index = size_t{0};
   for (auto& segment : materialized_segments) {
     for (auto& materialized_value : segment) {
       DebugAssert(index <= std::numeric_limits<uint32_t>::max(), "Index has to fit into 32 bits. ");
       const auto sorting_key = Data32BitCompression<T>::compress(materialized_value.value, min_value, max_value);
       simd_element_list.emplace_back(static_cast<uint32_t>(index), sorting_key);
+      materialized_values.push_back(std::move(materialized_value));
       ++index;
     }
   }
@@ -169,39 +176,72 @@ constexpr std::size_t choose_count_per_vector() {
 }
 
 template <typename SimdSortType, typename ColumnType>
-radix_partition::RadixPartition<ColumnType> construct_and_sort_partitions(std::span<SimdElement> elements) {
-  auto radix_partitioner = radix_partition::RadixPartition<ColumnType>(elements);
+RadixPartition<ColumnType> construct_and_sort_partitions(std::span<SimdElement> elements) {
+  auto radix_partitioner = RadixPartition<ColumnType>(elements);
   radix_partitioner.execute();
 
-  const auto num_partitions = radix_partition::RadixPartition<ColumnType>::num_partitions();
+  const auto num_partitions = RadixPartition<ColumnType>::num_partitions();
   for (auto partition_index = std::size_t{0}; partition_index < num_partitions; ++partition_index) {
-    auto& partition = radix_partitioner.partition(partition_index);
-    if (!partition.size) {
+    auto& bucket = radix_partitioner.bucket(partition_index);
+    if (!bucket.size) {
       continue;
     }
     const auto count_per_vector = choose_count_per_vector();
-    auto* input_pointer = partition.template begin<SimdSortType>();
+    auto* input_pointer = bucket.template begin<SimdSortType>();
     auto* output_pointer = radix_partitioner.template get_working_memory<SimdSortType>(partition_index);
     DebugAssert((simd_sort::is_simd_aligned<SimdSortType, 64>(input_pointer)), "Input not cache aligned.");
     DebugAssert((simd_sort::is_simd_aligned<SimdSortType, 64>(output_pointer)), "Output not cache aligned.");
 
-    simd_sort::sort<count_per_vector>(input_pointer, output_pointer, partition.size);
-    partition.data = reinterpret_cast<SimdElement*>(output_pointer);
+    simd_sort::sort<count_per_vector>(input_pointer, output_pointer, bucket.size);
+    bucket.data = reinterpret_cast<SimdElement*>(output_pointer);
   }
 
   return radix_partitioner;
 };
 
+template <typename SortingType, typename RadixPartition>
+simd_sort::simd_vector<SimdElement> merge_sorted_buckets(PerThread<RadixPartition>& partitions,
+                                                         std::size_t bucket_index) {
+  // From each partition take the bucket at bucket_index and merge them into one sorted list.
+  auto temp_a = simd_sort::simd_vector<SortingType>{};
+  auto temp_b = simd_sort::simd_vector<SortingType>{};
+  auto& merged_last = temp_a;
+  auto& output = temp_b;
+  for (auto& partition : partitions) {
+    auto& bucket = partition.bucket(bucket_index);
+    std::merge(merged_last.begin(), merged_last.end(), bucket.template begin<SortingType>(),
+               bucket.template end<SortingType>(), std::back_inserter(output));
+    std::swap(merged_last, output);
+    output.clear();
+  }
+
+  DebugAssert(std::is_sorted(merged_last.begin(), merged_last.end()), "Merged output is not sorted.");
+
+  auto final_output = simd_sort::simd_vector<SimdElement>();
+  final_output.reserve(merged_last.size());
+  for (auto& element : merged_last) {
+    final_output.push_back(std::bit_cast<SimdElement>(element));
+  }
+
+  DebugAssert(std::is_sorted(final_output.begin(), final_output.end(),
+                             [](const auto& left, const auto& right) {
+                               return static_cast<uint64_t>(left.key) < static_cast<uint64_t>(right.key);
+                             }),
+              "Merged output is not sorted according to key.");
+
+  return final_output;
+}
+
 template <typename SortingType, typename ColumnType>
-void sort_relation(SimdElementList& simd_elements) {
+PerHash<simd_sort::simd_vector<SimdElement>> sort_relation(SimdElementList& simd_elements) {
   const auto num_items = simd_elements.size();
   const auto base_size_per_thread = num_items / THREAD_COUNT;
   const auto remainder = num_items % THREAD_COUNT;
 
-  using RadixPartition = radix_partition::RadixPartition<ColumnType>;
+  using RadixPartition = RadixPartition<ColumnType>;
 
-  auto thread_partitions = std::array<RadixPartition, THREAD_COUNT>{};
-  auto thread_inputs = std::array<std::span<SimdElement>, THREAD_COUNT>{};
+  auto thread_partitions = PerThread<RadixPartition>{};
+  auto thread_inputs = PerThread<std::span<SimdElement>>{};
 
   // Split simd_elements into THREAD_COUNT many sections.
   auto* input_start_address = simd_elements.data();
@@ -211,45 +251,32 @@ void sort_relation(SimdElementList& simd_elements) {
     offset += current_range_size;
   }
 
-  // Each section is assigned to a thread, which when radix partitions the input and sorts each partition.
   spawn_and_wait_per_thread(thread_inputs, [&thread_partitions](auto& elements, std::size_t thread_index) {
     thread_partitions[thread_index] = construct_and_sort_partitions<SortingType, ColumnType>(elements);
   });
 
-  const auto num_threads = THREAD_COUNT;
-  // DebugAssert that each partition is sorted correctly.
-  for (auto thread_index = 0u; thread_index < num_threads; ++thread_index) {
-    const auto& partitions = thread_partitions[thread_index].partitions();
-    for (auto partition : partitions) {
-      DebugAssert(std::is_sorted(partition.template begin<SortingType>(), partition.template end<SortingType>()),
+#if HYRISE_DEBUG
+  for (auto thread_index = 0u; thread_index < THREAD_COUNT; ++thread_index) {
+    const auto& buckets = thread_partitions[thread_index].buckets();
+    for (auto bucket : buckets) {
+      // Check that each bucket is sorted according to SortingType and the key of the SimdElement;
+      DebugAssert(std::is_sorted(bucket.template begin<SortingType>(), bucket.template end<SortingType>()),
                   "Partition was not sorted correctly.");
-      DebugAssert(std::is_sorted(partition.template begin<SimdElement>(), partition.template end<SimdElement>(),
+      DebugAssert(std::is_sorted(bucket.template begin<SimdElement>(), bucket.template end<SimdElement>(),
                                  [](const auto& left, const auto& right) {
                                    return static_cast<uint64_t>(left.key) < static_cast<uint64_t>(right.key);
                                  }),
                   "Partition was not sorted according to key.");
     }
   }
+#endif
 
-  // DebugAssert that each partition is sorted correctly.
+  auto merged_outputs = PerHash<simd_sort::simd_vector<SimdElement>>{};
+  spawn_and_wait_per_hash(merged_outputs, [&thread_partitions](auto& merged_output, std::size_t bucket_index) {
+    merged_output = merge_sorted_buckets<SortingType>(thread_partitions, bucket_index);
+  });
 
-  // TODO(finn): Gather buckets with same index from all partitions.
-  // TODO(finn): Apply multiway merging.
-
-  for (auto thread_index = 0u; thread_index < num_threads; ++thread_index) {
-    std::cout << "========================================================" << std::endl;
-    std::cout << "thread: " << thread_index << std::endl;
-    auto& radix_partitions = thread_partitions[thread_index].partitions();
-    for (std::size_t i = 0; i < radix_partition::PARTITION_SIZE; ++i) {
-      if (radix_partitions[i].size == 0u) {
-        continue;
-      }
-      std::cout << "p: " << i << std::endl;
-      for (auto& element : radix_partitions[i].elements()) {
-        std::cout << element << std::endl;
-      }
-    }
-  }
+  return merged_outputs;
 }
 
 template <typename ColumnType>
@@ -266,7 +293,10 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
         _primary_right_column_id{right_column_id},
         _primary_predicate_condition{op},
         _mode{mode},
-        _secondary_join_predicates{secondary_join_predicates} {}
+        _secondary_join_predicates{secondary_join_predicates} {
+    _output_pos_lists_left.resize(radix_partition::PARTITION_SIZE);
+    _output_pos_lists_right.resize(radix_partition::PARTITION_SIZE);
+  }
 
  protected:
   // NOLINTBEGIN(cppcoreguidelines-avoid-const-or-ref-data-members)
@@ -279,30 +309,384 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
   const PredicateCondition _primary_predicate_condition;
   const JoinMode _mode;
 
-  MaterializedSegmentList<ColumnType> _materialized_segments_left;
-  MaterializedSegmentList<ColumnType> _materialized_segments_right;
+  std::vector<MaterializedValue<ColumnType>> _materialized_values_left;
+  std::vector<MaterializedValue<ColumnType>> _materialized_values_right;
+
+  // Contains the null value row ids if a join column is an outer join column.
+  RowIDPosList _null_rows_left;
+  RowIDPosList _null_rows_right;
+
   SimdElementList _simd_elements_left;
   SimdElementList _simd_elements_right;
 
-  SimdElementList _partitioned_element_left;
-  SimdElementList _partitioned_element_right;
+  PerHash<simd_sort::simd_vector<SimdElement>> _sorted_per_hash_left;
+  PerHash<simd_sort::simd_vector<SimdElement>> _sorted_per_hash_right;
 
   const std::vector<OperatorJoinPredicate>& _secondary_join_predicates;
+
+  // Contains the output row ids for each cluster.
+  std::vector<RowIDPosList> _output_pos_lists_left;
+  std::vector<RowIDPosList> _output_pos_lists_right;
+
   // NOLINTEND(cppcoreguidelines-avoid-const-or-ref-data-members)
+
+  enum class CompareResult { Less, Greater, Equal };
+
+  struct PotentialMatchRange {
+    PotentialMatchRange(std::size_t init_start_index, std::size_t init_end_index, std::span<SimdElement> init_elements)
+        : start_index(init_start_index), end_index(init_end_index), elements(init_elements) {}
+
+    std::size_t start_index;
+    std::size_t end_index;
+    std::span<SimdElement> elements;
+
+    // Executes the given action for every row id of the table in this range.
+    void for_every_row_id(const std::vector<MaterializedValue<ColumnType>>& materialized_values, auto&& action) const {
+      for (auto index = start_index; index < end_index; ++index) {
+        const auto& element = elements[index];
+        std::cout << element.index << std::endl;
+        const auto& materialized_value = materialized_values[element.index];
+        if constexpr (requires { action(materialized_value.row_id, materialized_value.value); }) {
+          action(materialized_value.row_id, materialized_value.value);
+
+        } else {
+          action(materialized_value.row_id);
+        }
+      }
+    }
+
+    void find_matches_with_range(const PotentialMatchRange& other_range,
+                                 const std::vector<MaterializedValue<ColumnType>>& materialized_values_left,
+                                 const std::vector<MaterializedValue<ColumnType>>& materialized_values_right,
+                                 auto&& action) const {
+      this->for_every_row_id(materialized_values_left, [&](const RowID left_row_id, const ColumnType& value_left) {
+        other_range.for_every_row_id(materialized_values_right,
+                                     [&](const RowID right_row_id, const ColumnType& value_right) {
+                                       if (value_left != value_right) {
+                                         std::cout << "Found false positive";
+                                         return;
+                                       }
+                                       action(left_row_id, right_row_id);
+                                     });
+      });
+    }
+  };
+
+  std::size_t _equal_value_range_size(std::size_t start_index, simd_sort::simd_vector<SimdElement>& elements) {
+    if (start_index >= elements.size()) {
+      return 0;
+    }
+    auto begin = elements.begin();
+    std::advance(begin, start_index);
+    const auto run_value = begin->key;
+
+    constexpr auto LINEAR_SEARCH_ITEMS = std::size_t{128};
+    auto end = begin + LINEAR_SEARCH_ITEMS;
+    if (start_index + LINEAR_SEARCH_ITEMS >= elements.size()) {
+      // Set end of linear search to end of input vector if we would overshoot otherwise.
+      end = elements.end();
+    }
+
+    const auto linear_search_result = std::find_if(begin, end, [&](const auto& simd_element) {
+      return simd_element.key > run_value;
+    });
+
+    if (linear_search_result != end) {
+      // Match found within the linearly scanned part.
+      return std::distance(begin, linear_search_result);
+    }
+
+    if (linear_search_result == elements.end()) {
+      // We did not find a larger value in the linearly scanned part and it spanned until the end of the input vector.
+      // That means all values up to the end are part of the run.
+      return std::distance(begin, end);
+    }
+
+    // Binary search in case the run did not end within the linearly scanned part.
+    const auto binary_search_result = std::upper_bound(end, elements.end(), *end, [](const auto& lhs, const auto& rhs) {
+      return lhs.key < rhs.key;
+    });
+    return std::distance(begin, binary_search_result);
+  }
+
+  void _emit_combination(std::size_t bucket_index, RowID left_row_id, RowID right_row_id) {
+    _output_pos_lists_left[bucket_index].push_back(left_row_id);
+    _output_pos_lists_right[bucket_index].push_back(right_row_id);
+  }
+
+  // Only for multi predicated inner joins.
+  // Emits all the combinations of row ids from the left table range and the right table range to the join output
+  // where the secondary predicates are satisfied.
+  void _emit_combinations_multi_predicated_inner(const std::size_t bucket_index, const PotentialMatchRange left_range,
+                                                 const PotentialMatchRange right_range,
+                                                 MultiPredicateJoinEvaluator& multi_predicate_join_evaluator
+                                                 [[maybe_unused]]) {
+    left_range.find_matches_with_range(
+        right_range, _materialized_values_left, _materialized_values_right,
+        [&](const RowID left_row_id, const RowID right_row_id) {
+          if (multi_predicate_join_evaluator.satisfies_all_predicates(left_row_id, right_row_id)) {
+            _emit_combination(bucket_index, left_row_id, right_row_id);
+          }
+        });
+  }
+
+  // Only for multi predicated left outer joins.
+  // Emits all the combinations of row ids from the left table range and the right table range to the join output
+  // where the secondary predicates are satisfied.
+  // For a left row id without a match, the combination [left row id|NULL row id] is emitted.
+  void _emit_combinations_multi_predicated_left_outer(std::size_t bucket_index, const PotentialMatchRange& left_range,
+                                                      const PotentialMatchRange& right_range,
+                                                      MultiPredicateJoinEvaluator& multi_predicate_join_evaluator) {
+    if (_primary_predicate_condition != PredicateCondition::Equals) {
+      return;
+    }
+
+    left_range.for_every_row_id(_materialized_values_left, [&](const RowID left_row_id, const ColumnType& left_value) {
+      auto left_row_id_matched = false;
+      right_range.for_every_row_id(
+          _materialized_values_right, [&](const RowID right_row_id, const ColumnType& right_value) {
+            if (multi_predicate_join_evaluator.satisfies_all_predicates(left_row_id, right_row_id) &&
+                left_value == right_value) {
+              _emit_combination(bucket_index, left_row_id, right_row_id);
+              left_row_id_matched = true;
+            }
+          });
+      if (!left_row_id_matched) {
+        _emit_combination(bucket_index, left_row_id, NULL_ROW_ID);
+      }
+    });
+  }
+
+  // Emits all the combinations of row ids from the left table range and the right table range to the join output
+  // where also the secondary predicates are satisfied.
+  void _emit_qualified_combinations(const std::size_t bucket_index, const PotentialMatchRange& left_range,
+                                    const PotentialMatchRange& right_range,
+                                    std::optional<MultiPredicateJoinEvaluator>& multi_predicate_join_evaluator) {
+    if (multi_predicate_join_evaluator) {
+      if (_mode == JoinMode::Inner) {
+        std::cout << "multipredicated" << std::endl;
+        _emit_combinations_multi_predicated_inner(bucket_index, left_range, right_range,
+                                                  multi_predicate_join_evaluator.value());
+      } else if (_mode == JoinMode::Left) {
+        _emit_combinations_multi_predicated_left_outer(bucket_index, left_range, right_range,
+                                                       multi_predicate_join_evaluator.value());
+      }
+      //else if (_mode == JoinMode::Right) {
+      //   _emit_combinations_multi_predicated_right_outer(output_cluster, left_range, right_range,
+      //                                                   *multi_predicate_join_evaluator);
+      // } else if (_mode == JoinMode::FullOuter) {
+      //   _emit_combinations_multi_predicated_full_outer(output_cluster, left_range, right_range,
+      //                                                  *multi_predicate_join_evaluator);
+      // }
+    } else {
+      // no secondary join predicates
+      left_range.find_matches_with_range(right_range, _materialized_values_left, _materialized_values_right,
+                                         [&](const RowID left_row_id, const RowID right_row_id) {
+                                           _emit_combination(bucket_index, left_row_id, right_row_id);
+                                         });
+    }
+  }
+
+  // Emits all combinations of row ids from the left table range and a NULL value on the right side
+  // (regarding the primary predicate) to the join output.
+  void _emit_right_primary_null_combinations(const std::size_t bucket_index, const PotentialMatchRange& left_range) {
+    left_range.for_every_row_id(_materialized_values_left, [&](RowID left_row_id) {
+      _emit_combination(bucket_index, left_row_id, NULL_ROW_ID);
+    });
+  }
+
+  // Emits all combinations of row ids from the right table range and a NULL value on the left side
+  // (regarding the primary predicate) to the join output.
+  void _emit_left_primary_null_combinations(const std::size_t bucket_index, const PotentialMatchRange& right_range) {
+    right_range.for_every_row_id(_materialized_values_right, [&](RowID right_row_id) {
+      _emit_combination(bucket_index, NULL_ROW_ID, right_row_id);
+    });
+  }
+
+  void _find_matches_in_ranges(const PotentialMatchRange& left_range, const PotentialMatchRange& right_range,
+                               const CompareResult compare_result,
+                               std::optional<MultiPredicateJoinEvaluator>& multi_predicate_join_evaluator,
+                               const std::size_t bucket_index) {
+    DebugAssert(_primary_predicate_condition == PredicateCondition::Equals,
+                "Primary predicate condition has to be EQUALS!");
+    if (compare_result == CompareResult::Equal) {
+      _emit_qualified_combinations(bucket_index, left_range, right_range, multi_predicate_join_evaluator);
+    } else if (compare_result == CompareResult::Less) {
+      if (_mode == JoinMode::Left || _mode == JoinMode::FullOuter) {
+        _emit_right_primary_null_combinations(bucket_index, left_range);
+      }
+    } else if (compare_result == CompareResult::Greater) {
+      if (_mode == JoinMode::Right || _mode == JoinMode::FullOuter) {
+        _emit_left_primary_null_combinations(bucket_index, right_range);
+      }
+    }
+  }
+
+  // Compares two values and creates a comparison result.
+  template <typename T>
+  CompareResult _compare(const T& left, const T& right) {
+    if (left < right) {
+      return CompareResult::Less;
+    }
+
+    if (left == right) {
+      return CompareResult::Equal;
+    }
+
+    return CompareResult::Greater;
+  }
+
+  // Currently we only support Inner, Equi-Joins.
+  void _join_per_hash(std::size_t bucket_index, simd_sort::simd_vector<SimdElement>& left_elements,
+                      simd_sort::simd_vector<SimdElement>& right_elements) {
+    std::cout << "join per hash: " << bucket_index << std::endl;
+    auto multi_predicate_join_evaluator = std::optional<MultiPredicateJoinEvaluator>{};
+    if (!_secondary_join_predicates.empty()) {
+      multi_predicate_join_evaluator.emplace(*_sort_merge_join._left_input->get_output(),
+                                             *_sort_merge_join.right_input()->get_output(), _mode,
+                                             _secondary_join_predicates);
+    }
+
+    auto left_run_start = size_t{0};
+    auto right_run_start = size_t{0};
+
+    auto left_run_end = left_run_start + _equal_value_range_size(left_run_start, left_elements);
+    auto right_run_end = right_run_start + _equal_value_range_size(right_run_start, right_elements);
+
+    const auto left_size = left_elements.size();
+    const auto right_size = right_elements.size();
+
+    while (left_run_start < left_size && right_run_start < right_size) {
+      const auto& left_value = left_elements[left_run_start].key;
+      const auto& right_value = right_elements[right_run_start].key;
+
+      const auto compare_result = _compare(left_value, right_value);
+
+      const auto left_range = PotentialMatchRange(left_run_start, left_run_end, left_elements);
+      const auto right_range = PotentialMatchRange(right_run_start, right_run_end, right_elements);
+
+      _find_matches_in_ranges(left_range, right_range, compare_result, multi_predicate_join_evaluator, bucket_index);
+
+      // Advance to the next run on the smaller side or both if equal.
+      switch (compare_result) {
+        case CompareResult::Equal:
+          // Advance both runs.
+          left_run_start = left_run_end;
+          right_run_start = right_run_end;
+          left_run_end = left_run_start + _equal_value_range_size(left_run_start, left_elements);
+          right_run_end = right_run_start + _equal_value_range_size(right_run_start, right_elements);
+          break;
+        case CompareResult::Less:
+          // Advance the left run.
+          left_run_start = left_run_end;
+          left_run_end = left_run_start + _equal_value_range_size(left_run_start, left_elements);
+          break;
+        case CompareResult::Greater:
+          // Advance the right run.
+          right_run_start = right_run_end;
+          right_run_end = right_run_start + _equal_value_range_size(right_run_start, right_elements);
+          break;
+        default:
+          throw std::logic_error("Unknown CompareResult.");
+      }
+    }
+
+    const auto right_rest = PotentialMatchRange(right_run_start, right_size, left_elements);
+    const auto left_rest = PotentialMatchRange(left_run_start, left_size, right_elements);
+    if (left_run_start < left_size) {
+      _find_matches_in_ranges(left_rest, right_rest, CompareResult::Less, multi_predicate_join_evaluator, bucket_index);
+    } else if (right_run_start < right_size) {
+      _find_matches_in_ranges(left_rest, right_rest, CompareResult::Greater, multi_predicate_join_evaluator,
+                              bucket_index);
+    }
+  }
+
+  void _perform_join() {
+    for (auto bucket_index = std::size_t{0}; bucket_index < radix_partition::PARTITION_SIZE; ++bucket_index) {
+      // spawn_and_wait_per_hash([this](std::size_t bucket_index) {
+      _join_per_hash(bucket_index, _sorted_per_hash_left[bucket_index], _sorted_per_hash_right[bucket_index]);
+      // });
+    }
+  }
 
  public:
   std::shared_ptr<const Table> _on_execute() override {
+    std::cout << "Run JoinSimdSortMerg execute!!!" << std::endl;
+    const auto include_null_left = (_mode == JoinMode::Left || _mode == JoinMode::FullOuter);
+    const auto include_null_right = (_mode == JoinMode::Right || _mode == JoinMode::FullOuter);
+
     materialize_column_and_transform_to_simd_format<ColumnType>(_left_input_table, _primary_left_column_id,
-                                                                _materialized_segments_left, _simd_elements_left);
+                                                                _materialized_values_left, _simd_elements_left,
+                                                                _null_rows_left, include_null_left);
 
     materialize_column_and_transform_to_simd_format<ColumnType>(_right_input_table, _primary_right_column_id,
-                                                                _materialized_segments_right, _simd_elements_right);
+                                                                _materialized_values_right, _simd_elements_right,
+                                                                _null_rows_right, include_null_right);
+
+    std::cout << "Finished materialization" << std::endl;
 
     using SortingType = int64_t;
-    sort_relation<SortingType, ColumnType>(_simd_elements_left);
-    sort_relation<SortingType, ColumnType>(_simd_elements_right);
+    _sorted_per_hash_left = std::move(sort_relation<SortingType, ColumnType>(_simd_elements_left));
+    _sorted_per_hash_right = std::move(sort_relation<SortingType, ColumnType>(_simd_elements_right));
+    std::cout << "Finished sorting" << std::endl;
+    _perform_join();
 
-    return nullptr;
+    if (include_null_left || include_null_right) {
+      auto null_output_left = RowIDPosList();
+      auto null_output_right = RowIDPosList();
+
+      // Add the outer join rows which had a null value in their join column.
+      if (include_null_left) {
+        null_output_left.insert(null_output_left.end(), _null_rows_left.begin(), _null_rows_left.end());
+        null_output_right.insert(null_output_right.end(), _null_rows_left.size(), NULL_ROW_ID);
+      }
+      if (include_null_right) {
+        null_output_left.insert(null_output_left.end(), _null_rows_right.size(), NULL_ROW_ID);
+        null_output_right.insert(null_output_right.end(), _null_rows_right.begin(), _null_rows_right.end());
+      }
+
+      DebugAssert(null_output_left.size() == null_output_right.size(),
+                  "Null position lists are expected to be of equal length.");
+      if (!null_output_left.empty()) {
+        _output_pos_lists_left.push_back(std::move(null_output_left));
+        _output_pos_lists_right.push_back(std::move(null_output_right));
+      }
+    }
+
+    const auto create_left_side_pos_lists_by_segment = (_left_input_table->type() == TableType::References);
+    const auto create_right_side_pos_lists_by_segment = (_right_input_table->type() == TableType::References);
+
+    // A sort merge join's input can be heavily pre-filtered or the join results in very few matches. In contrast to
+    // the hash join, we do not (for now) merge small partitions to keep the sorted chunk guarantees, which could be
+    // exploited by subsequent operators.
+    constexpr auto ALLOW_PARTITION_MERGE = false;
+    auto output_chunks =
+        write_output_chunks(_output_pos_lists_left, _output_pos_lists_right, _left_input_table, _right_input_table,
+                            create_left_side_pos_lists_by_segment, create_right_side_pos_lists_by_segment,
+                            OutputColumnOrder::LeftFirstRightSecond, ALLOW_PARTITION_MERGE);
+
+    const ColumnID left_join_column = _sort_merge_join._primary_predicate.column_ids.first;
+    const ColumnID right_join_column = static_cast<ColumnID>(_sort_merge_join.left_input_table()->column_count() +
+                                                             _sort_merge_join._primary_predicate.column_ids.second);
+
+    for (auto& chunk : output_chunks) {
+      if (_sort_merge_join._primary_predicate.predicate_condition == PredicateCondition::Equals &&
+          _mode == JoinMode::Inner) {
+        chunk->set_immutable();
+        // chunk->set_individually_sorted_by({SortColumnDefinition(left_join_column, SortMode::Ascending),
+        //                                    SortColumnDefinition(right_join_column, SortMode::Ascending)});
+      }
+    }
+
+    auto result_table = _sort_merge_join._build_output_table(std::move(output_chunks));
+
+    if (_mode != JoinMode::Left && _mode != JoinMode::Right && _mode != JoinMode::FullOuter &&
+        _sort_merge_join._primary_predicate.predicate_condition == PredicateCondition::Equals) {
+      // Table clustering is not defined for columns storing NULL values. Additionally, clustering is not given for
+      // non-equal predicates.
+      result_table->set_value_clustered_by({left_join_column, right_join_column});
+    }
+    return result_table;
   }
 };
 

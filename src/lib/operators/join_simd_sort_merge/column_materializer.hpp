@@ -41,8 +41,9 @@ class SMJColumnMaterializer {
 
   // For sufficiently large chunks (number of rows > JOB_SPAWN_THRESHOLD), the materialization is parallelized. Returns
   // the materialized segments and the min and max value of the column.
-  std::tuple<MaterializedSegmentList<T>, T, T> materialize(const std::shared_ptr<const Table>& input,
-                                                           const ColumnID column_id) {
+  std::tuple<MaterializedSegmentList<T>, T, T, RowIDPosList> materialize(const std::shared_ptr<const Table>& input,
+                                                                         const ColumnID column_id,
+                                                                         const bool materialize_null) {
     const auto chunk_count = input->chunk_count();
 
     auto output = MaterializedSegmentList<T>(chunk_count);
@@ -58,7 +59,8 @@ class SMJColumnMaterializer {
 
       auto materialize_job = [&, chunk_id] {
         const auto& segment = input->get_chunk(chunk_id)->get_segment(column_id);
-        auto [materialized_segment, min_value, max_value] = _materialize_segment(segment, chunk_id);
+        auto [materialized_segment, min_value, max_value] =
+            _materialize_segment(segment, chunk_id, null_rows_per_chunk[chunk_id], materialize_null);
         output[chunk_id] = std::move(materialized_segment);
         min_max_per_chunk[chunk_id] = {min_value, max_value};
       };
@@ -80,12 +82,26 @@ class SMJColumnMaterializer {
     }
 
     Hyrise::get().scheduler()->schedule_and_wait_for_tasks(jobs);
-    return {std::move(output), min_value, max_value};
+
+    auto null_row_count = size_t{0};
+    for (const auto& null_rows : null_rows_per_chunk) {
+      null_row_count += null_rows.size();
+    }
+    auto null_rows = RowIDPosList{};
+    null_rows.reserve(null_row_count);
+
+    for (auto chunk_id = ChunkID{0}; chunk_id < chunk_count; ++chunk_id) {
+      const auto& chunk_null_rows = null_rows_per_chunk[chunk_id];
+      null_rows.insert(null_rows.end(), chunk_null_rows.begin(), chunk_null_rows.end());
+    }
+
+    return {std::move(output), min_value, max_value, std::move(null_rows)};
   }
 
  private:
   std::tuple<MaterializedSegment<T>, T, T> _materialize_segment(const std::shared_ptr<AbstractSegment>& segment,
-                                                                const ChunkID chunk_id) {
+                                                                const ChunkID chunk_id, RowIDPosList& null_rows_output,
+                                                                const bool materialize_null) {
     auto output = MaterializedSegment<T>{};
     output.reserve(segment->size());
 
@@ -94,6 +110,9 @@ class SMJColumnMaterializer {
 
     segment_iterate<T>(*segment, [&](const auto& position) {
       if (position.is_null()) {
+        if (materialize_null) {
+          null_rows_output.emplace_back(chunk_id, position.chunk_offset());
+        }
         return;
       }
       const auto value = position.value();

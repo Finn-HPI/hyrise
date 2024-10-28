@@ -12,12 +12,6 @@
 
 namespace hyrise::radix_partition {
 
-constexpr auto RADIX_BITS = uint8_t{8};
-constexpr auto HASH_MASK = std::size_t{(1u << RADIX_BITS) - 1};
-constexpr auto PARTITION_SIZE = uint32_t{1u << RADIX_BITS};
-constexpr auto CACHE_LINE_SIZE = std::size_t{64};
-constexpr auto TUPLES_PER_CACHELINE = CACHE_LINE_SIZE / 8;
-
 struct Partition {
   SimdElement* data;
   std::size_t size;
@@ -93,7 +87,6 @@ struct RadixPartition {
     auto& histogram = histogram_data.histogram;
 
     for (auto& element : _elements) {
-      std::cout << "key: " << element.key << " bucket: " << _bucket_index(element.key) << std::endl;
       ++histogram[_bucket_index(element.key)].count;
     }
     auto cache_aligned_output_size = std::size_t{0};
@@ -200,13 +193,13 @@ struct RadixPartition {
     return _partitioned_output.size();
   }
 
-  Partition& partition(std::size_t index) {
+  Partition& bucket(std::size_t index) {
     DebugAssert(_executed, "Do not call before execute.");
     DebugAssert(index >= 0 && index < num_partitions(), "Invalid partition index.");
     return _partitions[index];
   }
 
-  std::vector<Partition>& partitions() {
+  std::vector<Partition>& buckets() {
     DebugAssert(_executed, "Do not call before execute.");
     return _partitions;
   }

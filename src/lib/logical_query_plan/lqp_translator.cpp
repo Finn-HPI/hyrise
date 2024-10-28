@@ -45,6 +45,7 @@
 #include "operators/insert.hpp"
 #include "operators/join_hash.hpp"
 #include "operators/join_nested_loop.hpp"
+#include "operators/join_simd_sort_merge.hpp"
 #include "operators/join_sort_merge.hpp"
 #include "operators/limit.hpp"
 #include "operators/maintenance/create_prepared_plan.hpp"
@@ -388,7 +389,7 @@ std::shared_ptr<AbstractOperator> LQPTranslator::_translate_join_node(
   // Lacking a proper cost model, we assume JoinHash is always faster than JoinSortMerge, which is faster than
   // JoinNestedLoop and thus check for an operator compatible with the JoinNode in that order
   constexpr auto JOIN_OPERATOR_PREFERENCE_ORDER =
-      hana::to_tuple(hana::tuple_t<JoinHash, JoinSortMerge, JoinNestedLoop>);
+      hana::to_tuple(hana::tuple_t<JoinSimdSortMerge, JoinHash, JoinSortMerge, JoinNestedLoop>);
 
   boost::hana::for_each(JOIN_OPERATOR_PREFERENCE_ORDER, [&](const auto join_operator_t) {
     using JoinOperator = typename decltype(join_operator_t)::type;
