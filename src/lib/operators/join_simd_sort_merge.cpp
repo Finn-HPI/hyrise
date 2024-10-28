@@ -1,6 +1,8 @@
 #include "join_simd_sort_merge.hpp"
 
+#include <boost/container_hash/hash.hpp>
 #include <boost/functional/hash.hpp>
+#include <boost/unordered/unordered_flat_set.hpp>
 
 #include "operators/join_helper/join_output_writing.hpp"
 #include "operators/join_simd_sort_merge/radix_partitioning.hpp"
@@ -90,7 +92,8 @@ using namespace radix_partition;
 
 bool JoinSimdSortMerge::supports(const JoinConfiguration config) {
   return config.predicate_condition == PredicateCondition::Equals && config.left_data_type == config.right_data_type &&
-         (config.join_mode == JoinMode::Inner || config.join_mode == JoinMode::Left);
+         (config.join_mode == JoinMode::Inner || config.join_mode == JoinMode::Left ||
+          config.join_mode == JoinMode::Right || config.join_mode == JoinMode::FullOuter);
 }
 
 JoinSimdSortMerge::JoinSimdSortMerge(const std::shared_ptr<const AbstractOperator>& left,
@@ -332,6 +335,17 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
 
   enum class CompareResult { Less, Greater, Equal };
 
+  struct RowHasher {
+    size_t operator()(const RowID& row) const {
+      auto seed = size_t{0};
+      boost::hash_combine(seed, row.chunk_id);
+      boost::hash_combine(seed, row.chunk_offset);
+      return seed;
+    }
+  };
+
+  using RowHashSet = boost::unordered_flat_set<RowID, RowHasher>;
+
   struct PotentialMatchRange {
     PotentialMatchRange(std::size_t init_start_index, std::size_t init_end_index, std::span<SimdElement> init_elements)
         : start_index(init_start_index), end_index(init_end_index), elements(init_elements) {}
@@ -344,11 +358,9 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
     void for_every_row_id(const std::vector<MaterializedValue<ColumnType>>& materialized_values, auto&& action) const {
       for (auto index = start_index; index < end_index; ++index) {
         const auto& element = elements[index];
-        std::cout << element.index << std::endl;
         const auto& materialized_value = materialized_values[element.index];
         if constexpr (requires { action(materialized_value.row_id, materialized_value.value); }) {
           action(materialized_value.row_id, materialized_value.value);
-
         } else {
           action(materialized_value.row_id);
         }
@@ -363,7 +375,6 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
         other_range.for_every_row_id(materialized_values_right,
                                      [&](const RowID right_row_id, const ColumnType& value_right) {
                                        if (value_left != value_right) {
-                                         std::cout << "Found false positive";
                                          return;
                                        }
                                        action(left_row_id, right_row_id);
@@ -434,12 +445,11 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
   // Emits all the combinations of row ids from the left table range and the right table range to the join output
   // where the secondary predicates are satisfied.
   // For a left row id without a match, the combination [left row id|NULL row id] is emitted.
-  void _emit_combinations_multi_predicated_left_outer(std::size_t bucket_index, const PotentialMatchRange& left_range,
+  void _emit_combinations_multi_predicated_left_outer(const std::size_t bucket_index,
+                                                      const PotentialMatchRange& left_range,
                                                       const PotentialMatchRange& right_range,
                                                       MultiPredicateJoinEvaluator& multi_predicate_join_evaluator) {
-    if (_primary_predicate_condition != PredicateCondition::Equals) {
-      return;
-    }
+    DebugAssert(_primary_predicate_condition == PredicateCondition::Equals, "Primary predicate has to be Equals.");
 
     left_range.for_every_row_id(_materialized_values_left, [&](const RowID left_row_id, const ColumnType& left_value) {
       auto left_row_id_matched = false;
@@ -457,6 +467,70 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
     });
   }
 
+  // Only for multi predicated right outer joins.
+  // Emits all the combinations of row ids from the left table range and the right table range to the join output
+  // where the secondary predicates are satisfied.
+  // For a right row id without a match, the combination [NULL row id|right row id] is emitted.
+  void _emit_combinations_multi_predicated_right_outer(const std::size_t bucket_index,
+                                                       const PotentialMatchRange& left_range,
+                                                       const PotentialMatchRange& right_range,
+                                                       MultiPredicateJoinEvaluator& multi_predicate_join_evaluator) {
+    DebugAssert(_primary_predicate_condition == PredicateCondition::Equals, "Primary predicate has to be Equals.");
+
+    right_range.for_every_row_id(
+        _materialized_values_right, [&](const RowID right_row_id, const ColumnType& right_value) {
+          auto right_row_id_matched = false;
+          left_range.for_every_row_id(
+              _materialized_values_left, [&](const RowID left_row_id, const ColumnType& left_value) {
+                if (multi_predicate_join_evaluator.satisfies_all_predicates(left_row_id, right_row_id) &&
+                    left_value == right_value) {
+                  _emit_combination(bucket_index, left_row_id, right_row_id);
+                  right_row_id_matched = true;
+                }
+              });
+          if (!right_row_id_matched) {
+            _emit_combination(bucket_index, NULL_ROW_ID, right_row_id);
+          }
+        });
+  }
+
+  // Only for multi-predicate full outer joins.
+  // Emits all the combinations of row ids from the left table range and the right table range to the join output
+  // where the secondary predicates are satisfied.
+  // For a left row id without a match, the combination [right row id|NULL row id] is emitted.
+  // For a right row id without a match, the combination [NULL row id|right row id] is emitted.
+  void _emit_combinations_multi_predicated_full_outer(const std::size_t bucket_index,
+                                                      const PotentialMatchRange& left_range,
+                                                      const PotentialMatchRange& right_range,
+                                                      MultiPredicateJoinEvaluator& multi_predicate_join_evaluator) {
+    DebugAssert(_primary_predicate_condition == PredicateCondition::Equals, "Primary predicate has to be Equals.");
+
+    auto matched_right_row_ids = RowHashSet{};
+
+    left_range.for_every_row_id(_materialized_values_left, [&](const RowID left_row_id, const ColumnType& left_value) {
+      auto left_row_id_matched = false;
+      right_range.for_every_row_id(
+          _materialized_values_right, [&](const RowID right_row_id, const ColumnType& right_value) {
+            if (multi_predicate_join_evaluator.satisfies_all_predicates(left_row_id, right_row_id) &&
+                left_value == right_value) {
+              left_row_id_matched = true;
+              matched_right_row_ids.insert(right_row_id);
+            }
+          });
+      if (!left_row_id_matched) {
+        _emit_combination(bucket_index, left_row_id, NULL_ROW_ID);
+      }
+    });
+
+    // Add null value combinations for right row ids that have no match.
+    right_range.for_every_row_id(_materialized_values_right, [&](RowID right_row_id) {
+      // Right_row_ids_with_match has no key `right_row_id`.
+      if (!matched_right_row_ids.contains(right_row_id)) {
+        _emit_combination(bucket_index, NULL_ROW_ID, right_row_id);
+      }
+    });
+  }
+
   // Emits all the combinations of row ids from the left table range and the right table range to the join output
   // where also the secondary predicates are satisfied.
   void _emit_qualified_combinations(const std::size_t bucket_index, const PotentialMatchRange& left_range,
@@ -464,20 +538,18 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
                                     std::optional<MultiPredicateJoinEvaluator>& multi_predicate_join_evaluator) {
     if (multi_predicate_join_evaluator) {
       if (_mode == JoinMode::Inner) {
-        std::cout << "multipredicated" << std::endl;
         _emit_combinations_multi_predicated_inner(bucket_index, left_range, right_range,
                                                   multi_predicate_join_evaluator.value());
       } else if (_mode == JoinMode::Left) {
         _emit_combinations_multi_predicated_left_outer(bucket_index, left_range, right_range,
                                                        multi_predicate_join_evaluator.value());
+      } else if (_mode == JoinMode::Right) {
+        _emit_combinations_multi_predicated_right_outer(bucket_index, left_range, right_range,
+                                                        multi_predicate_join_evaluator.value());
+      } else if (_mode == JoinMode::FullOuter) {
+        _emit_combinations_multi_predicated_full_outer(bucket_index, left_range, right_range,
+                                                       multi_predicate_join_evaluator.value());
       }
-      //else if (_mode == JoinMode::Right) {
-      //   _emit_combinations_multi_predicated_right_outer(output_cluster, left_range, right_range,
-      //                                                   *multi_predicate_join_evaluator);
-      // } else if (_mode == JoinMode::FullOuter) {
-      //   _emit_combinations_multi_predicated_full_outer(output_cluster, left_range, right_range,
-      //                                                  *multi_predicate_join_evaluator);
-      // }
     } else {
       // no secondary join predicates
       left_range.find_matches_with_range(right_range, _materialized_values_left, _materialized_values_right,
@@ -539,7 +611,6 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
   // Currently we only support Inner, Equi-Joins.
   void _join_per_hash(std::size_t bucket_index, simd_sort::simd_vector<SimdElement>& left_elements,
                       simd_sort::simd_vector<SimdElement>& right_elements) {
-    std::cout << "join per hash: " << bucket_index << std::endl;
     auto multi_predicate_join_evaluator = std::optional<MultiPredicateJoinEvaluator>{};
     if (!_secondary_join_predicates.empty()) {
       multi_predicate_join_evaluator.emplace(*_sort_merge_join._left_input->get_output(),
@@ -591,22 +662,21 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
       }
     }
 
-    const auto right_rest = PotentialMatchRange(right_run_start, right_size, left_elements);
-    const auto left_rest = PotentialMatchRange(left_run_start, left_size, right_elements);
+    const auto left_remainder = PotentialMatchRange(left_run_start, left_size, left_elements);
+    const auto right_remainder = PotentialMatchRange(right_run_start, right_size, right_elements);
     if (left_run_start < left_size) {
-      _find_matches_in_ranges(left_rest, right_rest, CompareResult::Less, multi_predicate_join_evaluator, bucket_index);
+      _find_matches_in_ranges(left_remainder, right_remainder, CompareResult::Less, multi_predicate_join_evaluator,
+                              bucket_index);
     } else if (right_run_start < right_size) {
-      _find_matches_in_ranges(left_rest, right_rest, CompareResult::Greater, multi_predicate_join_evaluator,
+      _find_matches_in_ranges(left_remainder, right_remainder, CompareResult::Greater, multi_predicate_join_evaluator,
                               bucket_index);
     }
   }
 
   void _perform_join() {
-    for (auto bucket_index = std::size_t{0}; bucket_index < radix_partition::PARTITION_SIZE; ++bucket_index) {
-      // spawn_and_wait_per_hash([this](std::size_t bucket_index) {
+    spawn_and_wait_per_hash([this](std::size_t bucket_index) {
       _join_per_hash(bucket_index, _sorted_per_hash_left[bucket_index], _sorted_per_hash_right[bucket_index]);
-      // });
-    }
+    });
   }
 
  public:
@@ -623,12 +693,10 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
                                                                 _materialized_values_right, _simd_elements_right,
                                                                 _null_rows_right, include_null_right);
 
-    std::cout << "Finished materialization" << std::endl;
-
     using SortingType = int64_t;
     _sorted_per_hash_left = std::move(sort_relation<SortingType, ColumnType>(_simd_elements_left));
     _sorted_per_hash_right = std::move(sort_relation<SortingType, ColumnType>(_simd_elements_right));
-    std::cout << "Finished sorting" << std::endl;
+
     _perform_join();
 
     if (include_null_left || include_null_right) {
