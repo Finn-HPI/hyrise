@@ -1,5 +1,8 @@
 #pragma once
 
+#include <span>
+#include <vector>
+
 #include "operators/join_simd_sort_merge/simd_utils.hpp"
 #include "util.hpp"
 
@@ -37,6 +40,7 @@ struct Partition {
 template <typename T>
 using cache_aligned_vector = simd_sort::simd_vector<T>;
 
+template <typename ColumnType>
 struct RadixPartition {
  public:
   explicit RadixPartition(const std::span<SimdElement> elements) : _has_data(true), _elements(elements) {}
@@ -77,12 +81,20 @@ struct RadixPartition {
     return (value + TUPLES_PER_CACHELINE - 1) & ~(TUPLES_PER_CACHELINE - 1);
   }
 
+  template <typename T>
+  static inline std::size_t _bucket_index(T key, std::size_t seed = 41) {
+    std::size_t hash_value = boost::hash<T>()(key);
+    boost::hash_combine(hash_value, seed);  // Combines seed with the float hash
+    return hash_value & HASH_MASK;
+  }
+
   HistogramData _compute_histogram() {
     auto histogram_data = HistogramData{};
     auto& histogram = histogram_data.histogram;
 
     for (auto& element : _elements) {
-      ++histogram[element.key & HASH_MASK].count;
+      std::cout << "key: " << element.key << " bucket: " << _bucket_index(element.key) << std::endl;
+      ++histogram[_bucket_index(element.key)].count;
     }
     auto cache_aligned_output_size = std::size_t{0};
     for (auto bucket_index = std::size_t{0}; bucket_index < PARTITION_SIZE; ++bucket_index) {
@@ -151,7 +163,7 @@ struct RadixPartition {
     }
 
     for (auto& element : _elements) {
-      const auto bucket_index = element.key & HASH_MASK;
+      const auto bucket_index = _bucket_index(element.key);
       __builtin_prefetch(&buffers[bucket_index], 1, 0);
       auto& buffer = buffers[bucket_index];
       auto slot = buffer.data.output_offset;

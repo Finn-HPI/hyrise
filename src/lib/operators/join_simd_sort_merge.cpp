@@ -83,7 +83,6 @@ struct Data32BitCompression<hyrise::pmr_string> {
 namespace hyrise {
 
 using Partition = radix_partition::Partition;
-using RadixPartition = radix_partition::RadixPartition;
 
 bool JoinSimdSortMerge::supports(const JoinConfiguration config) {
   return config.predicate_condition == PredicateCondition::Equals && config.left_data_type == config.right_data_type &&
@@ -169,20 +168,20 @@ constexpr std::size_t choose_count_per_vector() {
 #endif
 }
 
-template <typename SimdSortType>
-RadixPartition construct_and_sort_partitions(std::span<SimdElement> elements) {
-  auto radix_partitioner = RadixPartition(elements);
+template <typename SimdSortType, typename ColumnType>
+radix_partition::RadixPartition<ColumnType> construct_and_sort_partitions(std::span<SimdElement> elements) {
+  auto radix_partitioner = radix_partition::RadixPartition<ColumnType>(elements);
   radix_partitioner.execute();
 
-  const auto num_partitions = RadixPartition::num_partitions();
+  const auto num_partitions = radix_partition::RadixPartition<ColumnType>::num_partitions();
   for (auto partition_index = std::size_t{0}; partition_index < num_partitions; ++partition_index) {
     auto& partition = radix_partitioner.partition(partition_index);
     if (!partition.size) {
       continue;
     }
     const auto count_per_vector = choose_count_per_vector();
-    auto* input_pointer = partition.begin<SimdSortType>();
-    auto* output_pointer = radix_partitioner.get_working_memory<SimdSortType>(partition_index);
+    auto* input_pointer = partition.template begin<SimdSortType>();
+    auto* output_pointer = radix_partitioner.template get_working_memory<SimdSortType>(partition_index);
     DebugAssert((simd_sort::is_simd_aligned<SimdSortType, 64>(input_pointer)), "Input not cache aligned.");
     DebugAssert((simd_sort::is_simd_aligned<SimdSortType, 64>(output_pointer)), "Output not cache aligned.");
 
@@ -193,11 +192,13 @@ RadixPartition construct_and_sort_partitions(std::span<SimdElement> elements) {
   return radix_partitioner;
 };
 
-template <typename SortingType>
+template <typename SortingType, typename ColumnType>
 void sort_relation(SimdElementList& simd_elements) {
   const auto num_items = simd_elements.size();
   const auto base_size_per_thread = num_items / THREAD_COUNT;
   const auto remainder = num_items % THREAD_COUNT;
+
+  using RadixPartition = radix_partition::RadixPartition<ColumnType>;
 
   auto thread_partitions = std::array<RadixPartition, THREAD_COUNT>{};
   auto thread_inputs = std::array<std::span<SimdElement>, THREAD_COUNT>{};
@@ -212,10 +213,23 @@ void sort_relation(SimdElementList& simd_elements) {
 
   // Each section is assigned to a thread, which when radix partitions the input and sorts each partition.
   spawn_and_wait_per_thread(thread_inputs, [&thread_partitions](auto& elements, std::size_t thread_index) {
-    thread_partitions[thread_index] = construct_and_sort_partitions<SortingType>(elements);
+    thread_partitions[thread_index] = construct_and_sort_partitions<SortingType, ColumnType>(elements);
   });
 
   const auto num_threads = THREAD_COUNT;
+  // DebugAssert that each partition is sorted correctly.
+  for (auto thread_index = 0u; thread_index < num_threads; ++thread_index) {
+    const auto& partitions = thread_partitions[thread_index].partitions();
+    for (auto partition : partitions) {
+      DebugAssert(std::is_sorted(partition.template begin<SortingType>(), partition.template end<SortingType>()),
+                  "Partition was not sorted correctly.");
+      DebugAssert(std::is_sorted(partition.template begin<SimdElement>(), partition.template end<SimdElement>(),
+                                 [](const auto& left, const auto& right) {
+                                   return static_cast<uint64_t>(left.key) < static_cast<uint64_t>(right.key);
+                                 }),
+                  "Partition was not sorted according to key.");
+    }
+  }
 
   // DebugAssert that each partition is sorted correctly.
 
@@ -238,7 +252,7 @@ void sort_relation(SimdElementList& simd_elements) {
   }
 }
 
-template <typename T>
+template <typename ColumnType>
 class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperatorImpl {
  public:
   JoinSimdSortMergeImpl(JoinSimdSortMerge& sort_merge_join, const std::shared_ptr<const Table>& left_input_table,
@@ -265,8 +279,8 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
   const PredicateCondition _primary_predicate_condition;
   const JoinMode _mode;
 
-  MaterializedSegmentList<T> _materialized_segments_left;
-  MaterializedSegmentList<T> _materialized_segments_right;
+  MaterializedSegmentList<ColumnType> _materialized_segments_left;
+  MaterializedSegmentList<ColumnType> _materialized_segments_right;
   SimdElementList _simd_elements_left;
   SimdElementList _simd_elements_right;
 
@@ -278,15 +292,15 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
 
  public:
   std::shared_ptr<const Table> _on_execute() override {
-    materialize_column_and_transform_to_simd_format<T>(_left_input_table, _primary_left_column_id,
-                                                       _materialized_segments_left, _simd_elements_left);
+    materialize_column_and_transform_to_simd_format<ColumnType>(_left_input_table, _primary_left_column_id,
+                                                                _materialized_segments_left, _simd_elements_left);
 
-    materialize_column_and_transform_to_simd_format<T>(_right_input_table, _primary_right_column_id,
-                                                       _materialized_segments_right, _simd_elements_right);
+    materialize_column_and_transform_to_simd_format<ColumnType>(_right_input_table, _primary_right_column_id,
+                                                                _materialized_segments_right, _simd_elements_right);
 
     using SortingType = int64_t;
-    sort_relation<SortingType>(_simd_elements_left);
-    sort_relation<SortingType>(_simd_elements_right);
+    sort_relation<SortingType, ColumnType>(_simd_elements_left);
+    sort_relation<SortingType, ColumnType>(_simd_elements_right);
 
     return nullptr;
   }
