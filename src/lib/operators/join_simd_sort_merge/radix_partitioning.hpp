@@ -77,9 +77,8 @@ struct RadixPartition {
 
   template <typename T>
   static inline std::size_t _bucket_index(T key, std::size_t seed = 41) {
-    std::size_t hash_value = boost::hash<T>()(key);
-    boost::hash_combine(hash_value, seed);  // Combines seed with the float hash
-    return hash_value & HASH_MASK;
+    boost::hash_combine(seed, key);
+    return seed & HASH_MASK;
   }
 
   HistogramData _compute_histogram() {
