@@ -81,8 +81,18 @@ struct MultiVec<1, elements_per_register, VecType> {
   }
 
   template <typename T>
+  inline void __attribute__((always_inline)) loadu(T* address) {
+    a = load_unaligned<VecType>(address);
+  }
+
+  template <typename T>
   inline void __attribute__((always_inline)) store(T* address) {
     store_aligned(a, address);
+  }
+
+  template <typename T>
+  inline void __attribute__((always_inline)) storeu(T* address) {
+    store_unaligned(a, address);
   }
 
   inline VecType& __attribute__((always_inline)) first() {
@@ -106,9 +116,21 @@ struct MultiVec<2, elements_per_register, VecType> {
   }
 
   template <typename T>
+  inline void __attribute__((always_inline)) loadu(T* address) {
+    a = load_unaligned<VecType>(address);
+    b = load_unaligned<VecType>(address + elements_per_register);
+  }
+
+  template <typename T>
   inline void __attribute__((always_inline)) store(T* address) {
     store_aligned(a, address);
     store_aligned(b, address + elements_per_register);
+  }
+
+  template <typename T>
+  inline void __attribute__((always_inline)) storeu(T* address) {
+    store_unaligned(a, address);
+    store_unaligned(b, address + elements_per_register);
   }
 
   inline VecType& __attribute__((always_inline)) first() {
@@ -136,11 +158,27 @@ struct MultiVec<4, elements_per_register, VecType> {
   }
 
   template <typename T>
+  inline void __attribute__((always_inline)) loadu(T* address) {
+    a = load_unaligned<VecType>(address);
+    b = load_unaligned<VecType>(address + elements_per_register);
+    c = load_unaligned<VecType>(address + 2 * elements_per_register);
+    d = load_unaligned<VecType>(address + 3 * elements_per_register);
+  }
+
+  template <typename T>
   inline void __attribute__((always_inline)) store(T* address) {
     store_aligned(a, address);
     store_aligned(b, address + elements_per_register);
     store_aligned(c, address + 2 * elements_per_register);
     store_aligned(d, address + 3 * elements_per_register);
+  }
+
+  template <typename T>
+  inline void __attribute__((always_inline)) storeu(T* address) {
+    store_unaligned(a, address);
+    store_unaligned(b, address + elements_per_register);
+    store_unaligned(c, address + 2 * elements_per_register);
+    store_unaligned(d, address + 3 * elements_per_register);
   }
 
   inline VecType& __attribute__((always_inline)) first() {

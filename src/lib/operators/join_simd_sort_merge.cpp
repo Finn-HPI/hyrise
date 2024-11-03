@@ -5,6 +5,7 @@
 #include <boost/unordered/unordered_flat_set.hpp>
 
 #include "operators/join_helper/join_output_writing.hpp"
+#include "operators/join_simd_sort_merge/multiway_merging.hpp"
 #include "operators/join_simd_sort_merge/radix_partitioning.hpp"
 #include "operators/join_simd_sort_merge/simd_sort.hpp"
 #include "operators/multi_predicate_join/multi_predicate_join_evaluator.hpp"
@@ -206,34 +207,74 @@ template <typename SortingType, typename RadixPartition>
 simd_sort::simd_vector<SimdElement> merge_sorted_buckets(PerThread<RadixPartition>& partitions,
                                                          std::size_t bucket_index) {
   // From each partition take the bucket at bucket_index and merge them into one sorted list.
-  auto temp_a = simd_sort::simd_vector<SortingType>{};
-  auto temp_b = simd_sort::simd_vector<SortingType>{};
-  auto& merged_last = temp_a;
-  auto& output = temp_b;
+  auto sorted_buckets = std::vector<std::unique_ptr<Bucket>>{};
+  sorted_buckets.reserve(partitions.size());
+
   for (auto& partition : partitions) {
     auto& bucket = partition.bucket(bucket_index);
-    std::merge(merged_last.begin(), merged_last.end(), bucket.template begin<SortingType>(),
-               bucket.template end<SortingType>(), std::back_inserter(output));
-    std::swap(merged_last, output);
-    output.clear();
+    sorted_buckets.push_back(std::make_unique<Bucket>(bucket));
   }
 
-  DebugAssert(std::is_sorted(merged_last.begin(), merged_last.end()), "Merged output is not sorted.");
-
-  auto final_output = simd_sort::simd_vector<SimdElement>();
-  final_output.reserve(merged_last.size());
-  for (auto& element : merged_last) {
-    final_output.push_back(std::bit_cast<SimdElement>(element));
-  }
-
-  DebugAssert(std::is_sorted(final_output.begin(), final_output.end(),
+  auto multiway_merger = MutliwayMerger<4, SortingType>(sorted_buckets);
+  auto merged_output = std::move(multiway_merger.merge());
+  DebugAssert(std::is_sorted(merged_output.begin(), merged_output.end(),
                              [](const auto& left, const auto& right) {
-                               return static_cast<uint64_t>(left.key) < static_cast<uint64_t>(right.key);
+                               return left.key < right.key;
                              }),
-              "Merged output is not sorted according to key.");
+              "Output of Multiway-Merging is not sorted by key.");
 
-  return final_output;
+  return merged_output;
 }
+
+// template <typename SortingType, typename RadixPartition>
+// simd_sort::simd_vector<SimdElement> merge_sorted_buckets(PerThread<RadixPartition>& partitions,
+//                                                          std::size_t bucket_index) {
+//   // From each partition take the bucket at bucket_index and merge them into one sorted list.
+//   auto temp_a = simd_sort::simd_vector<SortingType>{};
+//   auto temp_b = simd_sort::simd_vector<SortingType>{};
+//   auto& merged_last = temp_a;
+//   auto& output = temp_b;
+//
+//   auto sorted_buckets = std::vector<std::unique_ptr<Bucket>>{};
+//   sorted_buckets.reserve(partitions.size());
+//
+//   for (auto& partition : partitions) {
+//     auto& bucket = partition.bucket(bucket_index);
+//     sorted_buckets.push_back(std::make_unique<Bucket>(bucket));
+//     std::merge(merged_last.begin(), merged_last.end(), bucket.template begin<SortingType>(),
+//                bucket.template end<SortingType>(), std::back_inserter(output));
+//     std::swap(merged_last, output);
+//     output.clear();
+//   }
+//
+//   const auto num_buckets = sorted_buckets.size();
+//   auto multiway_merger = MutliwayMerger<4, SortingType>(sorted_buckets);
+//   if (bucket_index == 255) {
+//     std::cout << "num buckets: " << num_buckets << std::endl;
+//     auto merged_output = std::move(multiway_merger.merge());
+//     DebugAssert(std::is_sorted(merged_output.begin(), merged_output.end(),
+//                                [](const auto& left, const auto& right) {
+//                                  return left.key < right.key;
+//                                }),
+//                 "Output of multiway-merging is not sorted.");
+//   }
+//
+//   DebugAssert(std::is_sorted(merged_last.begin(), merged_last.end()), "Merged output is not sorted.");
+//
+//   auto final_output = simd_sort::simd_vector<SimdElement>();
+//   final_output.reserve(merged_last.size());
+//   for (auto& element : merged_last) {
+//     final_output.push_back(std::bit_cast<SimdElement>(element));
+//   }
+//
+//   DebugAssert(std::is_sorted(final_output.begin(), final_output.end(),
+//                              [](const auto& left, const auto& right) {
+//                                return left.key < right.key;
+//                              }),
+//               "Merged output is not sorted according to key.");
+//
+//   return final_output;
+// }
 
 template <typename SortingType, typename ColumnType>
 PerHash<simd_sort::simd_vector<SimdElement>> sort_relation(SimdElementList& simd_elements) {

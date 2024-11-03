@@ -12,7 +12,7 @@
 
 namespace hyrise::radix_partition {
 
-struct Partition {
+struct Bucket {
   SimdElement* data;
   std::size_t size;
 
@@ -24,6 +24,10 @@ struct Partition {
   template <typename T>
   T* end() const {
     return reinterpret_cast<T*>(data + size);
+  }
+
+  bool empty() const {
+    return size == 0;
   }
 
   std::span<SimdElement> elements() const {
@@ -66,7 +70,7 @@ struct RadixPartition {
   bool _has_data = false;
   bool _executed = false;
   std::span<SimdElement> _elements;
-  std::vector<Partition> _partitions;
+  std::vector<Bucket> _partitions;
   std::vector<std::size_t> _partiton_offsets;
   cache_aligned_vector<SimdElement> _partitioned_output;
   cache_aligned_vector<SimdElement> _working_memory;
@@ -192,13 +196,13 @@ struct RadixPartition {
     return _partitioned_output.size();
   }
 
-  Partition& bucket(std::size_t index) {
+  Bucket& bucket(std::size_t index) {
     DebugAssert(_executed, "Do not call before execute.");
     DebugAssert(index >= 0 && index < num_partitions(), "Invalid partition index.");
     return _partitions[index];
   }
 
-  std::vector<Partition>& buckets() {
+  std::vector<Bucket>& buckets() {
     DebugAssert(_executed, "Do not call before execute.");
     return _partitions;
   }

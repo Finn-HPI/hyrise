@@ -26,8 +26,7 @@ struct SimdElement {
   uint32_t key;
 
   friend std::ostream& operator<<(std::ostream& stream, const SimdElement& element) {
-    auto cmp_value = std::bit_cast<int64_t>(element);
-    stream << "SimdElement(" << element.key << "," << element.index << ") cmp: " << cmp_value;
+    stream << "(" << element.key << "," << element.index << ")";
     return stream;
   }
 };
