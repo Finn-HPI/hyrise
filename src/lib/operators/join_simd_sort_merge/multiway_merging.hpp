@@ -1,179 +1,16 @@
 #pragma once
 
+#include "operators/join_simd_sort_merge/circular_buffer.hpp"
 #include "operators/join_simd_sort_merge/radix_partitioning.hpp"
 #include "operators/join_simd_sort_merge/two_way_merge.hpp"
 #include "operators/join_simd_sort_merge/util.hpp"
 
 namespace hyrise::multiway_merging {
 
-struct BufferChunk {
-  std::size_t start;
-  std::size_t end;
-
-  std::size_t number_of_slots() const {
-    return end - start;
-  }
-};
-
-class CircularBuffer {
- public:
-  void write(auto&& write_func, const size_t buffer_size) {
-    auto first_chunk = BufferChunk{_head, (_tail > _head) ? _tail : buffer_size};
-    auto number_of_write_slots = first_chunk.number_of_slots();
-
-    if (number_of_write_slots) {
-      auto written_slots = write_func(first_chunk, _buffer + first_chunk.start);
-      _update_tail(written_slots, buffer_size);
-      number_of_write_slots -= written_slots;
-    }
-
-    auto second_chunk = BufferChunk{0, (_tail > _head) ? 0 : _tail};
-    if (number_of_write_slots == 0 && second_chunk.number_of_slots()) {
-      auto written_slots = write_func(second_chunk, _buffer);
-      _update_tail(written_slots, buffer_size);
-    }
-  }
-
-  void write2(const size_t buffer_size, auto&& write_func) {
-    auto first_chunk = BufferChunk{_head, (_tail > _head) ? _tail : buffer_size};
-    auto number_of_write_slots = first_chunk.number_of_slots();
-
-    if (number_of_write_slots) {
-      auto written_slots = write_func(std::span(_buffer + first_chunk.start, first_chunk.number_of_slots()));
-      _update_tail(written_slots, buffer_size);
-      number_of_write_slots -= written_slots;
-    }
-
-    auto second_chunk = BufferChunk{0, (_tail > _head) ? 0 : _tail};
-    if (number_of_write_slots == 0 && second_chunk.number_of_slots()) {
-      auto written_slots = write_func(std::span(_buffer, second_chunk.number_of_slots()));
-      _update_tail(written_slots, buffer_size);
-    }
-  }
-
-  void read(auto&& read_func, const size_t buffer_size) {
-    auto read_chunk = BufferChunk{_tail, (_tail < _head) ? _head : buffer_size};
-    if (!read_chunk.number_of_slots()) {
-      return;
-    }
-    auto number_of_read_slots = read_func(read_chunk, _buffer + read_chunk.start);
-    _update_head(number_of_read_slots, buffer_size);
-  }
-
-  void read_and_write_to(CircularBuffer& write_buffer, const size_t buffer_size, auto&& read_write_func) {
-    while (!empty() && write_buffer.fill_count() < buffer_size) {
-      auto read_func = [&](BufferChunk& read_chunk, SimdElement* input) {
-        auto slots_read = size_t{0};
-        auto write_func = [&](BufferChunk& write_chunk, SimdElement* output) {
-          const auto slots_written = std::min(read_chunk.number_of_slots(), write_chunk.number_of_slots());
-          read_write_func(std::span(input, slots_written), std::span(output, slots_written));
-          slots_read += slots_written;
-          return slots_written;
-        };
-        write_buffer.write(write_func, buffer_size);
-        return slots_read;
-      };
-      read(read_func, buffer_size);
-    }
-    DebugAssert(empty() || write_buffer.fill_count() == buffer_size,
-                "Either source has to be empty or desination full.");
-  }
-
-  void read_and_write_to(SimdElement*& output, const size_t buffer_size, auto&& read_write_func) {
-    while (!empty()) {
-      auto read_func = [&](BufferChunk& read_chunk, SimdElement* input) {
-        const auto number_of_slots = read_chunk.number_of_slots();
-        read_write_func(std::span(input, number_of_slots), std::span(output, number_of_slots));
-        output += number_of_slots;
-        return number_of_slots;
-      };
-      read(read_func, buffer_size);
-    }
-    DebugAssert(empty(), "Source has to be empty.");
-  }
-
-  void merge_and_write(CircularBuffer& inner_read_buffer, CircularBuffer& write_buffer, const size_t buffer_size,
-                       auto&& merge_func) {
-    auto read_left = [&](BufferChunk& left_chunk, SimdElement* left_input) {
-      auto slots_read_left = size_t{0};
-      auto read_right = [&](BufferChunk& right_chunk, SimdElement* right_input) {
-        auto slots_read_right = size_t{0};
-        auto write_func = [&](BufferChunk& write_chunk, SimdElement* output) {
-          auto [count_reads_left, count_reads_right] = merge_func(std::span(left_input, left_chunk.number_of_slots()),
-                                                                  std::span(right_input, right_chunk.number_of_slots()),
-                                                                  std::span(output, write_chunk.number_of_slots()));
-          slots_read_left += count_reads_left;
-          slots_read_right += count_reads_right;
-          return count_reads_left + count_reads_right;
-        };
-        write_buffer.write(write_func, buffer_size);
-        return slots_read_right;
-      };
-      inner_read_buffer.read(read_right, buffer_size);
-      return slots_read_left;
-    };
-    read(read_left, buffer_size);
-  }
-
-  void merge_and_write(CircularBuffer& inner_read_buffer, SimdElement*& output, const size_t buffer_size,
-                       auto&& merge_func) {
-    auto read_left = [&](BufferChunk& left_chunk, SimdElement* left_input) {
-      auto slots_read_left = size_t{0};
-      auto read_right = [&](BufferChunk& right_chunk, SimdElement* right_input) {
-        auto slots_read_right = size_t{0};
-        const auto max_output_size = left_chunk.number_of_slots() + right_chunk.number_of_slots();
-        auto [count_reads_left, count_reads_right] =
-            merge_func(std::span(left_input, left_chunk.number_of_slots()),
-                       std::span(right_input, right_chunk.number_of_slots()), std::span(output, max_output_size));
-        output += count_reads_left + count_reads_right;
-        slots_read_left += count_reads_left;
-        slots_read_right += count_reads_right;
-        return slots_read_right;
-      };
-      inner_read_buffer.read(read_right, buffer_size);
-      return slots_read_left;
-    };
-    read(read_left, buffer_size);
-  }
-
-  void set_buffer(SimdElement* init_buffer) {
-    _buffer = init_buffer;
-  }
-
-  size_t fill_count() const {
-    return _fill_count;
-  }
-
-  bool empty() const {
-    return _fill_count == 0;
-  }
-
- private:
-  void _update_tail(size_t number_of_written_slots, const size_t buffer_size) {
-    _fill_count += number_of_written_slots;
-    _head += number_of_written_slots;
-    if (_head == buffer_size) {
-      _head = 0;
-    }
-  }
-
-  void _update_head(size_t number_of_read_slots, const size_t buffer_size) {
-    _fill_count -= number_of_read_slots;
-    _tail += number_of_read_slots;
-    if (_tail == buffer_size) {
-      _tail = 0;
-    }
-  }
-
-  SimdElement* _buffer{};
-  std::size_t _head = 0;
-  std::size_t _tail = 0;
-  std::size_t _fill_count = 0;
-};
-
-template <std::size_t count_per_vector, typename T>
+template <size_t count_per_vector, typename T>
 class MutliwayMerger {
   using Bucket = radix_partition::Bucket;
+  using CircularBuffer = circular_buffer::CircularBuffer;
   using TwoWayMerge = simd_sort::TwoWayMerge<count_per_vector, T>;
 
  public:
@@ -312,7 +149,7 @@ class MutliwayMerger {
 
       return count_writes;
     };
-    buffer.write2(_buffer_size, merge_buckets_into_buffer);
+    buffer.write(_buffer_size, merge_buckets_into_buffer);
 
     if (buffer.fill_count() == _buffer_size) {
       return total_number_of_writes;
@@ -331,7 +168,7 @@ class MutliwayMerger {
         total_number_of_writes += number_of_writes;
         return number_of_writes;
       };
-      buffer.write2(_buffer_size, write_func);
+      buffer.write(_buffer_size, write_func);
     };
 
     if (!left_bucket.empty()) {
@@ -455,8 +292,8 @@ class MutliwayMerger {
   static NodeIndex _right_child(NodeIndex node) { return 2 * node + 1; }
 
   // clang-format on
-  std::size_t _read_threshold = 800;
-  std::size_t _buffer_size = 1600;
+  size_t _read_threshold = 800;
+  size_t _buffer_size = 1600;
 
   bool _finished = false;
   size_t _leaf_count;
