@@ -215,7 +215,7 @@ simd_sort::simd_vector<SimdElement> merge_sorted_buckets(PerThread<RadixPartitio
     sorted_buckets.push_back(std::make_unique<Bucket>(bucket));
   }
 
-  auto multiway_merger = multiway_merging::MutliwayMerger<4, SortingType>(sorted_buckets);
+  auto multiway_merger = multiway_merging::MutliwayMerger<choose_count_per_vector(), SortingType>(sorted_buckets);
   auto merged_output = std::move(multiway_merger.merge());
 
   DebugAssert(std::is_sorted(merged_output.begin(), merged_output.end(),
