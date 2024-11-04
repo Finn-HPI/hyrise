@@ -31,7 +31,7 @@ struct Bucket {
   }
 
   std::span<SimdElement> elements() const {
-    return {data, data + size};
+    return {data, size};
   }
 
   void retrieve_elements(size_t count) {

@@ -31,7 +31,7 @@ class MutliwayMerger {
     auto* output = merged_output.data();
     while (!_finished) {
       _finished = true;
-      _load_data_from_leaves();
+      _load_from_leaves();
       _execute_ready_nodes(output);
     }
     return merged_output;
@@ -49,6 +49,7 @@ class MutliwayMerger {
     }
 
     // Initialize done values for the inner nodes and the root node.
+    auto count_non_done_inner_nodes = size_t{0};
     for (auto node_index = first_leaf_index - 1; node_index >= ROOT; --node_index) {
       auto left_child_index = _left_child(node_index);
       auto right_child_index = _right_child(node_index);
@@ -56,19 +57,26 @@ class MutliwayMerger {
       auto& right = _nodes[right_child_index];
 
       _done[node_index] = (_done[left_child_index] && _done[right_child_index]) && (left.empty() && right.empty());
+      count_non_done_inner_nodes += static_cast<size_t>(!_done[node_index]);
+    }
+
+    if (!_done[ROOT]) {
+      --count_non_done_inner_nodes;
     }
 
     // Initialize buffer for innner nodes.
-    // TODO(finn): only set buffer for non done inner nodes and root.
-    const auto count_inner_nodes = NodeIndex{first_leaf_index - 1 - ROOT};
-    _fifo_buffer.resize(count_inner_nodes * _buffer_size);
-    auto index = size_t{0};
-    for (auto node_index = first_leaf_index - 1; node_index > ROOT; --node_index, ++index) {
-      _nodes[node_index].set_buffer(_fifo_buffer.data() + index * _buffer_size);
+    _fifo_buffer.resize(count_non_done_inner_nodes * _buffer_size);
+    auto buffer_index = size_t{0};
+    for (auto node_index = first_leaf_index - 1; node_index > ROOT; --node_index) {
+      if (_done[node_index]) {
+        continue;
+      }
+      _nodes[node_index].set_buffer(_fifo_buffer.data() + buffer_index * _buffer_size);
+      ++buffer_index;
     }
   }
 
-  void _load_data_from_leaves() {
+  void _load_from_leaves() {
     const auto first_leaf_index = NodeIndex{_leaf_count};
     const auto num_nodes = _nodes.size();
 
@@ -82,25 +90,29 @@ class MutliwayMerger {
       const auto left_bucket_index = leaf_index - first_leaf_index;
       const auto right_bucket_index = left_bucket_index + 1;
 
-      auto& lhs_bucket = _done[leaf_index] ? empty_bucket : *_sorted_buckets[left_bucket_index];
-      auto& rhs_bucket = _done[leaf_index + 1] ? empty_bucket : *_sorted_buckets[right_bucket_index];
+      auto& left_bucket = _done[leaf_index] ? empty_bucket : *_sorted_buckets[left_bucket_index];
+      auto& right_bucket = _done[leaf_index + 1] ? empty_bucket : *_sorted_buckets[right_bucket_index];
 
       auto& buffer = _nodes[node_index];
 
-      const auto num_items_read = _load_and_merge_from_leaves(buffer, lhs_bucket, rhs_bucket);
+      const auto num_items_read = _load_and_merge_from_leaves(buffer, left_bucket, right_bucket);
 
-      _done[node_index] = num_items_read == 0 || (lhs_bucket.empty() && rhs_bucket.empty());
+      DebugAssert(buffer.debug_is_sorted(_buffer_size), "After merging from leaves, the buffer is not sorted.");
+
+      _done[node_index] = num_items_read == 0 || (left_bucket.empty() && right_bucket.empty());
       _finished &= _done[node_index];
     }
   }
 
-  void _execute_ready_nodes(SimdElement*& output [[maybe_unused]]) {
+  void _execute_ready_nodes(SimdElement*& output) {
     const auto first_relevant_inner_node = _parent(_leaf_count - 1);
+    // After loading the first level of inner-nodes with data from the leaves, we check all remaining inner-nodes
+    // from bottom to top if they are ready to be executed. If that is the case we execute them.
     for (auto node_index = first_relevant_inner_node; node_index > ROOT; --node_index) {
       auto left_child_index = _left_child(node_index);
       auto right_child_index = _right_child(node_index);
 
-      auto& node_buffer = _nodes[node_index];
+      auto& buffer = _nodes[node_index];
       auto& left_child_buffer = _nodes[left_child_index];
       auto& right_child_buffer = _nodes[right_child_index];
 
@@ -109,12 +121,13 @@ class MutliwayMerger {
       }
 
       const auto children_done = _done[left_child_index] || _done[right_child_index];
-
-      if ((children_done || node_buffer.fill_count() < _read_threshold) && node_buffer.fill_count() < _buffer_size) {
+      if ((children_done || buffer.fill_count() < _read_threshold) && buffer.fill_count() < _buffer_size) {
         if (children_done ||
             (right_child_buffer.fill_count() >= _read_threshold && left_child_buffer.fill_count() >= _read_threshold)) {
-          _merge_children_into_node(node_buffer, left_child_buffer, right_child_buffer, _done[left_child_index],
+          _merge_children_into_node(buffer, left_child_buffer, right_child_buffer, _done[left_child_index],
                                     _done[right_child_index]);
+          DebugAssert(buffer.debug_is_sorted(_buffer_size),
+                      "After merging from inner child nodes, the buffer is not sorted.");
         }
         _done[node_index] = (_done[left_child_index] && _done[right_child_index]) &&
                             (left_child_buffer.empty() && right_child_buffer.empty());
@@ -122,9 +135,25 @@ class MutliwayMerger {
 
       _finished &= _done[node_index];
     }
+
+    // Finally we do a final merge of the left and right child of the ROOT and write the merged elemets to output.
     const auto left_index = _left_child(ROOT);
     const auto right_index = _right_child(ROOT);
+
+#if HYRISE_DEBUG
+    auto* output_before_merging = output;
     _merge_children_into_output(output, _nodes[left_index], _nodes[right_index], _done[left_index], _done[right_index]);
+
+    auto written_output = std::span(output_before_merging, output);
+    DebugAssert(std::is_sorted(written_output.begin(), written_output.end(),
+                               [](const auto& left, const auto& right) {
+                                 return left.key < right.key;
+                               }),
+                "Newly written output is not sorted by SimdElement.key.");
+
+#else
+    _merge_children_into_output(output, _nodes[left_index], _nodes[right_index], _done[left_index], _done[right_index]);
+#endif
   }
 
   size_t _load_and_merge_from_leaves(CircularBuffer& buffer, Bucket& left_bucket, Bucket& right_bucket) {
@@ -158,13 +187,12 @@ class MutliwayMerger {
     auto read_and_write_remaining = [&](Bucket& bucket) {
       auto write_func = [&](std::span<SimdElement> output) {
         const auto number_of_writes = std::min(output.size(), bucket.size);
+        auto input = bucket.elements().subspan(0, number_of_writes);
         output = output.subspan(0, number_of_writes);
-        auto* input = bucket.data;
-        for (auto& element : output) {
-          element = *input;
-          ++input;
-        }
+
+        std::ranges::copy(input, output.begin());
         bucket.retrieve_elements(number_of_writes);
+
         total_number_of_writes += number_of_writes;
         return number_of_writes;
       };

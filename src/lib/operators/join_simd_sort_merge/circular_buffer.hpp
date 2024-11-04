@@ -21,6 +21,9 @@ class CircularBuffer {
   inline void merge_and_write(CircularBuffer& inner_read_buffer, SimdElement*& output, const size_t buffer_size,
                               auto&& merge_func);
 
+  // Helper function to determine if buffer content is sorted by SimdElement.key.
+  inline bool debug_is_sorted(const size_t buffer_size);
+
   inline size_t fill_count() const {
     return _fill_count;
   }
@@ -177,6 +180,26 @@ inline void CircularBuffer::_update_head(size_t number_of_read_slots, const size
   if (_tail == buffer_size) {
     _tail = 0;
   }
+}
+
+inline bool CircularBuffer::debug_is_sorted(const size_t buffer_size) {
+  auto first_chunk = BufferChunk{_tail, (_tail < _head) ? _head : buffer_size};
+  auto second_chunk = BufferChunk{0, (_tail < _head) ? 0 : _head};
+
+  auto is_sorted = [&](BufferChunk& chunk) {
+    if (chunk.number_of_slots() == 0) {
+      return true;
+    }
+    auto elements = std::span(_buffer + chunk.start, chunk.number_of_slots());
+    return std::is_sorted(elements.begin(), elements.end(), [](const auto& left, const auto& right) {
+      return left.key < right.key;
+    });
+  };
+
+  auto sorted = true;
+  sorted &= is_sorted(first_chunk);
+  sorted &= is_sorted(second_chunk);
+  return sorted;
 }
 
 }  // namespace hyrise::circular_buffer
