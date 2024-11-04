@@ -63,7 +63,7 @@ inline void CircularBuffer::write(const size_t buffer_size, auto&& write_func) {
   DebugAssert(_fill_count < buffer_size, "Wrote to full buffer");
   auto first_chunk = BufferChunk{_head, (_tail > _head) ? _tail : buffer_size};
 
-  if (!first_chunk.size()) {
+  if (first_chunk.size()) {
     auto written_slots = write_func(std::span(_buffer + first_chunk.start, first_chunk.size()));
     DebugAssert(written_slots <= first_chunk.size(), "Wrote more slots than available.");
     _update_head(written_slots, buffer_size);
