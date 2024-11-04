@@ -249,11 +249,6 @@ PerHash<simd_sort::simd_vector<SimdElement>> sort_relation(SimdElementList& simd
       // Check that each bucket is sorted according to SortingType and the key of the SimdElement;
       DebugAssert(std::is_sorted(bucket.template begin<SortingType>(), bucket.template end<SortingType>()),
                   "Partition was not sorted correctly.");
-      DebugAssert(std::is_sorted(bucket.template begin<SimdElement>(), bucket.template end<SimdElement>(),
-                                 [](const auto& left, const auto& right) {
-                                   return static_cast<uint64_t>(left.key) < static_cast<uint64_t>(right.key);
-                                 }),
-                  "Partition was not sorted according to key.");
     }
   }
 #endif

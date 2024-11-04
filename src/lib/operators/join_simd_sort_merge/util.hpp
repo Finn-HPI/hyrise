@@ -29,6 +29,10 @@ struct SimdElement {
     stream << "(" << element.key << "," << element.index << ")";
     return stream;
   }
+
+  bool operator==(const SimdElement& other) const {
+    return index == other.index && key == other.key;
+  }
 };
 
 template <typename T>

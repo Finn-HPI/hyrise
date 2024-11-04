@@ -36,10 +36,10 @@ class MutliwayMerger {
     }
 
     DebugAssert(std::is_sorted(merged_output.begin(), merged_output.end(),
-                               [](const auto& left, const auto& right) {
-                                 return left.key < right.key;
+                               [](auto& left, auto& right) {
+                                 return *reinterpret_cast<T*>(&left) < *reinterpret_cast<T*>(&right);
                                }),
-                "Merged output is not sorted by SimdElement.key.");
+                "Merged output is not sorted.");
 
     return merged_output;
   }
@@ -71,16 +71,17 @@ class MutliwayMerger {
       --count_non_done_inner_nodes;
     }
 
+    if (count_non_done_inner_nodes == 0) {
+      return;
+    }
+
+    // Setup buffers for innner nodes.
     constexpr auto CACHE_USAGE = 0.8;
     constexpr auto AVAILABLE_L2_CACHE = static_cast<size_t>(L2_CACHE_SIZE * CACHE_USAGE);
 
     _buffer_size = (AVAILABLE_L2_CACHE / sizeof(SimdElement)) / count_non_done_inner_nodes;
     _read_threshold = _buffer_size / 2;
 
-    std::cout << "count_non_done_inner_nodes: " << count_non_done_inner_nodes << std::endl;
-    std::cout << "buffer size: " << _buffer_size << std::endl;
-
-    // Initialize buffer for innner nodes.
     _fifo_buffer.resize(count_non_done_inner_nodes * _buffer_size);
     auto buffer_index = size_t{0};
     for (auto node_index = first_leaf_index - 1; node_index > ROOT; --node_index) {
@@ -113,7 +114,7 @@ class MutliwayMerger {
 
       const auto num_items_read = _load_and_merge_from_leaves(buffer, left_bucket, right_bucket);
 
-      DebugAssert(buffer.debug_is_sorted(_buffer_size), "After merging from leaves, the buffer is not sorted.");
+      DebugAssert(buffer.debug_is_sorted<T>(_buffer_size), "After merging from leaves, the buffer is not sorted.");
 
       _done[node_index] = num_items_read == 0 || (left_bucket.empty() && right_bucket.empty());
       _finished &= _done[node_index];
@@ -140,9 +141,12 @@ class MutliwayMerger {
       if ((children_done || buffer.fill_count() < _read_threshold) && buffer.fill_count() < _buffer_size) {
         if (children_done ||
             (right_child_buffer.fill_count() >= _read_threshold && left_child_buffer.fill_count() >= _read_threshold)) {
+          DebugAssert(left_child_buffer.debug_is_sorted<T>(_buffer_size), "Left child buffer is not sorted.");
+          DebugAssert(right_child_buffer.debug_is_sorted<T>(_buffer_size), "Right child buffer is not sorted.");
+
           _merge_children_into_node(buffer, left_child_buffer, right_child_buffer, _done[left_child_index],
                                     _done[right_child_index]);
-          DebugAssert(buffer.debug_is_sorted(_buffer_size),
+          DebugAssert(buffer.debug_is_sorted<T>(_buffer_size),
                       "After merging from inner child nodes, the buffer is not sorted.");
         }
         _done[node_index] = (_done[left_child_index] && _done[right_child_index]) &&
@@ -157,14 +161,17 @@ class MutliwayMerger {
 
 #if HYRISE_DEBUG
     auto* output_before_merging = output;
+    DebugAssert(_nodes[left_index].debug_is_sorted<T>(_buffer_size), "Left child buffer is not sorted.");
+    DebugAssert(_nodes[right_index].debug_is_sorted<T>(_buffer_size), "Right child buffer is not sorted.");
+
     _merge_children_into_output(output, _nodes[left_index], _nodes[right_index], _done[left_index], _done[right_index]);
 
     auto written_output = std::span(output_before_merging, output);
     DebugAssert(std::is_sorted(written_output.begin(), written_output.end(),
-                               [](const auto& left, const auto& right) {
-                                 return left.key < right.key;
+                               [](auto& left, auto& right) {
+                                 return *reinterpret_cast<T*>(&left) < *reinterpret_cast<T*>(&right);
                                }),
-                "Newly written output is not sorted by SimdElement.key.");
+                "Newly written output is not sorted.");
 #else
     _merge_children_into_output(output, _nodes[left_index], _nodes[right_index], _done[left_index], _done[right_index]);
 #endif
@@ -240,26 +247,29 @@ class MutliwayMerger {
     return {count_reads_left, count_reads_right};
   }
 
-  void _merge_children_into_node(CircularBuffer& node_buffer, CircularBuffer& left, CircularBuffer& right,
+  void _merge_children_into_node(CircularBuffer& buffer, CircularBuffer& left, CircularBuffer& right,
                                  bool left_child_done, bool right_child_done) {
     if (right_child_done && right.empty()) {
       if (!left_child_done && !left.empty()) {
-        _write_to_destination(node_buffer, left);
+        _write_to_destination(buffer, left);
         return;
       }
     } else if (left_child_done && left.empty()) {
       if (!right_child_done && !right.empty()) {
-        _write_to_destination(node_buffer, right);
+        _write_to_destination(buffer, right);
         return;
       }
     }
 
-    while (node_buffer.fill_count() < _buffer_size && (!left.empty() && !right.empty())) {
-      left.merge_and_write(right, node_buffer, _buffer_size, _merge_children);
+    while (buffer.fill_count() < _buffer_size && (!left.empty() && !right.empty())) {
+      left.merge_and_write(right, buffer, _buffer_size, _merge_children);
     }
 
+    DebugAssert((left.empty() || right.empty()) || buffer.fill_count() == _buffer_size,
+                "After merging one child buffer has to be empty or the node buffer full.");
+
     const bool both_children_done = right_child_done && left_child_done;
-    if (!both_children_done || node_buffer.fill_count() == _buffer_size) {
+    if (!both_children_done || buffer.fill_count() == _buffer_size) {
       return;
     }
 
@@ -268,9 +278,9 @@ class MutliwayMerger {
     };
 
     if (!left.empty()) {
-      left.read_and_write_to(node_buffer, _buffer_size, write_elements);
+      left.read_and_write_to(buffer, _buffer_size, write_elements);
     } else {
-      right.read_and_write_to(node_buffer, _buffer_size, write_elements);
+      right.read_and_write_to(buffer, _buffer_size, write_elements);
     }
   }
 
@@ -293,6 +303,8 @@ class MutliwayMerger {
     while (!left.empty() && !right.empty()) {
       left.merge_and_write(right, output, _buffer_size, _merge_children);
     }
+
+    DebugAssert(left.empty() || right.empty(), "After merging one child buffer has to be empty.");
 
     const bool both_children_done = right_child_done && left_child_done;
     if (!both_children_done) {

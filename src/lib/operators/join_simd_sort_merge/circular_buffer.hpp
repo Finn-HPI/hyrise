@@ -22,6 +22,7 @@ class CircularBuffer {
                               auto&& merge_func);
 
   // Helper function to determine if buffer content is sorted by SimdElement.key.
+  template <typename T>
   inline bool debug_is_sorted(const size_t buffer_size);
 
   inline size_t fill_count() const {
@@ -41,13 +42,13 @@ class CircularBuffer {
     size_t start;
     size_t end;
 
-    size_t number_of_slots() const {
+    size_t size() const {
       return end - start;
     }
   };
 
-  void _update_tail(size_t number_of_written_slots, const size_t buffer_size);
-  void _update_head(size_t number_of_read_slots, const size_t buffer_size);
+  void _update_head(size_t number_of_written_slots, const size_t buffer_size);
+  void _update_tail(size_t number_of_read_slots, const size_t buffer_size);
 
   SimdElement* _buffer{};
   size_t _head = 0;
@@ -56,29 +57,40 @@ class CircularBuffer {
 };
 
 inline void CircularBuffer::write(const size_t buffer_size, auto&& write_func) {
+  if (_tail == _head && _fill_count == buffer_size) {
+    return;
+  }
+
+  DebugAssert(_fill_count < buffer_size, "Write to full buffer");
   auto first_chunk = BufferChunk{_head, (_tail > _head) ? _tail : buffer_size};
-  auto number_of_write_slots = first_chunk.number_of_slots();
+  auto number_of_write_slots = first_chunk.size();
 
   if (number_of_write_slots) {
-    auto written_slots = write_func(std::span(_buffer + first_chunk.start, first_chunk.number_of_slots()));
-    _update_tail(written_slots, buffer_size);
+    auto written_slots = write_func(std::span(_buffer + first_chunk.start, first_chunk.size()));
+    DebugAssert(written_slots <= first_chunk.size(), "Wrote more slots than available.");
+    _update_head(written_slots, buffer_size);
     number_of_write_slots -= written_slots;
   }
 
-  auto second_chunk = BufferChunk{0, (_tail > _head) ? 0 : _tail};
-  if (number_of_write_slots == 0 && second_chunk.number_of_slots()) {
-    auto written_slots = write_func(std::span(_buffer, second_chunk.number_of_slots()));
-    _update_tail(written_slots, buffer_size);
+  if (_head == 0 && _head < _tail && _fill_count < buffer_size) {
+    auto second_chunk = BufferChunk{0, _tail};
+    auto written_slots = write_func(std::span(_buffer, second_chunk.size()));
+    DebugAssert(written_slots <= second_chunk.size(), "Wrote more slots than available.");
+    _update_head(written_slots, buffer_size);
   }
 }
 
 inline void CircularBuffer::read(const size_t buffer_size, auto&& read_func) {
-  auto read_chunk = BufferChunk{_tail, (_tail < _head) ? _head : buffer_size};
-  if (!read_chunk.number_of_slots()) {
+  if (_tail == _head && empty()) {
     return;
   }
-  auto number_of_read_slots = read_func(std::span(_buffer + read_chunk.start, read_chunk.number_of_slots()));
-  _update_head(number_of_read_slots, buffer_size);
+  auto read_chunk = BufferChunk{_tail, (_tail < _head) ? _head : buffer_size};
+  if (!read_chunk.size()) {
+    return;
+  }
+  auto number_of_read_slots = read_func(std::span(_buffer + read_chunk.start, read_chunk.size()));
+  DebugAssert(number_of_read_slots <= read_chunk.size(), "Read more than available.");
+  _update_tail(number_of_read_slots, buffer_size);
 }
 
 inline void CircularBuffer::read_and_write_to(CircularBuffer& write_buffer, const size_t buffer_size,
@@ -88,8 +100,11 @@ inline void CircularBuffer::read_and_write_to(CircularBuffer& write_buffer, cons
       auto slots_read = size_t{0};
       auto write_func = [&](std::span<SimdElement> output) {
         const auto slots_written = std::min(input.size(), output.size());
-        read_write_func(input, output);
+        read_write_func(input.subspan(0, slots_written), output.subspan(0, slots_written));
+
         slots_read += slots_written;
+        input = input.subspan(slots_written);
+
         return slots_written;
       };
       write_buffer.write(buffer_size, write_func);
@@ -106,7 +121,9 @@ inline void CircularBuffer::read_and_write_to(SimdElement*& output, const size_t
     auto read_func = [&](std::span<SimdElement> input) {
       const auto number_of_slots = input.size();
       read_write_func(input, std::span(output, number_of_slots));
+
       output += number_of_slots;
+
       return number_of_slots;
     };
     read(buffer_size, read_func);
@@ -127,6 +144,9 @@ inline void CircularBuffer::merge_and_write(CircularBuffer& inner_read_buffer, C
         slots_read_left += count_reads_left;
         slots_read_right += count_reads_right;
 
+        left_input = left_input.subspan(count_reads_left);
+        right_input = right_input.subspan(count_reads_right);
+
         return count_reads_left + count_reads_right;
       };
       write_buffer.write(buffer_size, write_func);
@@ -137,8 +157,7 @@ inline void CircularBuffer::merge_and_write(CircularBuffer& inner_read_buffer, C
   };
   read(buffer_size, read_left);
 
-  DebugAssert((empty() || inner_read_buffer.empty()) || write_buffer.fill_count() == buffer_size,
-              "After merging one child buffer has to be empty or the node buffer full.");
+  DebugAssert(write_buffer.fill_count() <= buffer_size, "Buffer fill_count exceeds maximum size.");
 }
 
 inline void CircularBuffer::merge_and_write(CircularBuffer& inner_read_buffer, SimdElement*& output,
@@ -152,6 +171,9 @@ inline void CircularBuffer::merge_and_write(CircularBuffer& inner_read_buffer, S
       auto [count_reads_left, count_reads_right] =
           merge_func(left_input, right_input, std::span(output, max_output_size));
 
+      left_input = left_input.subspan(count_reads_left);
+      right_input = right_input.subspan(count_reads_right);
+
       output += count_reads_left + count_reads_right;
       slots_read_left += count_reads_left;
       slots_read_right += count_reads_right;
@@ -162,37 +184,54 @@ inline void CircularBuffer::merge_and_write(CircularBuffer& inner_read_buffer, S
     return slots_read_left;
   };
   read(buffer_size, read_left);
-
-  DebugAssert(empty() || inner_read_buffer.empty(), "After merging one child buffer has to be empty.");
 }
 
-inline void CircularBuffer::_update_tail(size_t number_of_written_slots, const size_t buffer_size) {
+inline void CircularBuffer::_update_head(size_t number_of_written_slots, const size_t buffer_size) {
+  DebugAssert(_fill_count + number_of_written_slots <= buffer_size, "Number of written slots exceeds fill count");
   _fill_count += number_of_written_slots;
   _head += number_of_written_slots;
+
+  DebugAssert(_head <= buffer_size, "Head is out of buffer_size.");
+
   if (_head == buffer_size) {
     _head = 0;
   }
 }
 
-inline void CircularBuffer::_update_head(size_t number_of_read_slots, const size_t buffer_size) {
+inline void CircularBuffer::_update_tail(size_t number_of_read_slots, const size_t buffer_size) {
+  DebugAssert(number_of_read_slots <= _fill_count, "Number of read slots exceeds fill count.");
+
   _fill_count -= number_of_read_slots;
   _tail += number_of_read_slots;
+
+  DebugAssert(_tail <= buffer_size, "Tail is out of buffer_size.");
+
   if (_tail == buffer_size) {
     _tail = 0;
   }
 }
 
+template <typename T>
 inline bool CircularBuffer::debug_is_sorted(const size_t buffer_size) {
+  if (empty()) {
+    return true;
+  }
   auto first_chunk = BufferChunk{_tail, (_tail < _head) ? _head : buffer_size};
   auto second_chunk = BufferChunk{0, (_tail < _head) ? 0 : _head};
 
+  auto last_element = std::numeric_limits<T>::min();
+
   auto is_sorted = [&](BufferChunk& chunk) {
-    if (chunk.number_of_slots() == 0) {
+    if (chunk.size() == 0) {
       return true;
     }
-    auto elements = std::span(_buffer + chunk.start, chunk.number_of_slots());
-    return std::is_sorted(elements.begin(), elements.end(), [](const auto& left, const auto& right) {
-      return left.key < right.key;
+    auto elements = std::span(_buffer + chunk.start, chunk.size());
+    if (*reinterpret_cast<T*>(&elements.front()) < last_element) {
+      return false;
+    }
+    last_element = *reinterpret_cast<T*>(&elements.back());
+    return std::is_sorted(elements.begin(), elements.end(), [](auto& left, auto& right) {
+      return *reinterpret_cast<T*>(&left) < *reinterpret_cast<T*>(&right);
     });
   };
 
