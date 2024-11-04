@@ -221,13 +221,14 @@ set(
     operators/join_nested_loop.hpp
     operators/join_sort_merge.cpp
     operators/join_sort_merge.hpp
-    operators/join_simd_sort_merge.cpp
-    operators/join_simd_sort_merge.hpp
     operators/join_sort_merge/column_materializer.hpp
     operators/join_sort_merge/radix_cluster_sort.hpp
+    operators/join_simd_sort_merge.cpp
+    operators/join_simd_sort_merge.hpp
     operators/join_simd_sort_merge/simd_utils.hpp
     operators/join_simd_sort_merge/abstract_two_way_merge.hpp
     operators/join_simd_sort_merge/two_way_merge.hpp
+    operators/join_simd_sort_merge/multiway_merging.hpp
     operators/join_simd_sort_merge/simd_sort.hpp
     operators/join_simd_sort_merge/column_materializer.hpp
     operators/join_simd_sort_merge/util.hpp

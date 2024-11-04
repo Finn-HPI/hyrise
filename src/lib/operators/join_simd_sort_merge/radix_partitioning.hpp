@@ -33,6 +33,12 @@ struct Bucket {
   std::span<SimdElement> elements() const {
     return {data, data + size};
   }
+
+  void retrieve_elements(size_t count) {
+    DebugAssert(count <= size, "Can not retrieve more elements than currently in Bucket.");
+    size -= count;
+    data += count;
+  }
 };
 
 template <typename T>
