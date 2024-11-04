@@ -60,19 +60,16 @@ inline void CircularBuffer::write(const size_t buffer_size, auto&& write_func) {
   if (_tail == _head && _fill_count == buffer_size) {
     return;
   }
-
-  DebugAssert(_fill_count < buffer_size, "Write to full buffer");
+  DebugAssert(_fill_count < buffer_size, "Wrote to full buffer");
   auto first_chunk = BufferChunk{_head, (_tail > _head) ? _tail : buffer_size};
-  auto number_of_write_slots = first_chunk.size();
 
-  if (number_of_write_slots) {
+  if (!first_chunk.size()) {
     auto written_slots = write_func(std::span(_buffer + first_chunk.start, first_chunk.size()));
     DebugAssert(written_slots <= first_chunk.size(), "Wrote more slots than available.");
     _update_head(written_slots, buffer_size);
-    number_of_write_slots -= written_slots;
   }
 
-  if (_head == 0 && _head < _tail && _fill_count < buffer_size) {
+  if (_fill_count < buffer_size && _head == 0 && _head < _tail) {
     auto second_chunk = BufferChunk{0, _tail};
     auto written_slots = write_func(std::span(_buffer, second_chunk.size()));
     DebugAssert(written_slots <= second_chunk.size(), "Wrote more slots than available.");
