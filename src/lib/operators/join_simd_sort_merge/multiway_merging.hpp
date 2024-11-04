@@ -34,6 +34,13 @@ class MutliwayMerger {
       _load_from_leaves();
       _execute_ready_nodes(output);
     }
+
+    DebugAssert(std::is_sorted(merged_output.begin(), merged_output.end(),
+                               [](const auto& left, const auto& right) {
+                                 return left.key < right.key;
+                               }),
+                "Merged output is not sorted by SimdElement.key.");
+
     return merged_output;
   }
 
@@ -63,6 +70,15 @@ class MutliwayMerger {
     if (!_done[ROOT]) {
       --count_non_done_inner_nodes;
     }
+
+    constexpr auto CACHE_USAGE = 0.8;
+    constexpr auto AVAILABLE_L2_CACHE = static_cast<size_t>(L2_CACHE_SIZE * CACHE_USAGE);
+
+    _buffer_size = (AVAILABLE_L2_CACHE / sizeof(SimdElement)) / count_non_done_inner_nodes;
+    _read_threshold = _buffer_size / 2;
+
+    std::cout << "count_non_done_inner_nodes: " << count_non_done_inner_nodes << std::endl;
+    std::cout << "buffer size: " << _buffer_size << std::endl;
 
     // Initialize buffer for innner nodes.
     _fifo_buffer.resize(count_non_done_inner_nodes * _buffer_size);
@@ -132,7 +148,6 @@ class MutliwayMerger {
         _done[node_index] = (_done[left_child_index] && _done[right_child_index]) &&
                             (left_child_buffer.empty() && right_child_buffer.empty());
       }
-
       _finished &= _done[node_index];
     }
 
@@ -150,7 +165,6 @@ class MutliwayMerger {
                                  return left.key < right.key;
                                }),
                 "Newly written output is not sorted by SimdElement.key.");
-
 #else
     _merge_children_into_output(output, _nodes[left_index], _nodes[right_index], _done[left_index], _done[right_index]);
 #endif
@@ -230,12 +244,12 @@ class MutliwayMerger {
                                  bool left_child_done, bool right_child_done) {
     if (right_child_done && right.empty()) {
       if (!left_child_done && !left.empty()) {
-        _copy_buffer(node_buffer, left);
+        _write_to_destination(node_buffer, left);
         return;
       }
     } else if (left_child_done && left.empty()) {
       if (!right_child_done && !right.empty()) {
-        _copy_buffer(node_buffer, right);
+        _write_to_destination(node_buffer, right);
         return;
       }
     }
@@ -264,13 +278,13 @@ class MutliwayMerger {
                                    bool left_child_done, bool right_child_done) {
     if (right_child_done && right.empty()) {
       if (!left_child_done && !left.empty()) {
-        _write_buffer_to_output(output, left);
+        _write_to_destination(output, left);
         DebugAssert(left.empty(), "Left buffer should be empty.");
         return;
       }
     } else if (left_child_done && left.empty()) {
       if (!right_child_done && !right.empty()) {
-        _write_buffer_to_output(output, right);
+        _write_to_destination(output, right);
         DebugAssert(right.empty(), "Right buffer should be empty.");
         return;
       }
@@ -294,6 +308,14 @@ class MutliwayMerger {
     } else {
       right.read_and_write_to(output, _buffer_size, write_elements);
     }
+  }
+
+  template <typename Output>
+  void _write_to_destination(Output& destination, CircularBuffer& source) {
+    source.read_and_write_to(destination, _buffer_size,
+                             [](std::span<SimdElement> src, std::span<SimdElement> destination) {
+                               std::ranges::copy(src, destination.begin());
+                             });
   }
 
   void _copy_buffer(CircularBuffer& destination, CircularBuffer& source) {
@@ -320,15 +342,18 @@ class MutliwayMerger {
   static NodeIndex _right_child(NodeIndex node) { return 2 * node + 1; }
 
   // clang-format on
-  size_t _read_threshold = 800;
-  size_t _buffer_size = 1600;
 
-  bool _finished = false;
   size_t _leaf_count;
   std::vector<std::unique_ptr<Bucket>> _sorted_buckets;
   std::vector<CircularBuffer> _nodes;
   std::vector<bool> _done;
-  simd_sort::simd_vector<SimdElement> _fifo_buffer;
   size_t _total_output_size;
+
+  bool _finished = false;
+
+  size_t _buffer_size{};
+  size_t _read_threshold{};
+
+  simd_sort::simd_vector<SimdElement> _fifo_buffer;
 };
 }  // namespace hyrise::multiway_merging

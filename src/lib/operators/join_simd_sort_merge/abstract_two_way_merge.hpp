@@ -226,12 +226,10 @@ class AbstractTwoWayMerge {
 
   template <std::size_t kernel_size>
   static inline void __attribute__((always_inline)) merge_multiway_merge_nodes(
-      T* a_address, T* b_address, T* output_address, std::size_t& a_start, std::size_t& b_start,
-      std::size_t& output_start, std::size_t a_end, std::size_t b_end, std::size_t output_slots) {
+      T* a_address, T* b_address, T* output_address, std::size_t& count_reads_a, std::size_t& count_reads_b,
+      std::size_t& count_writes, const std::size_t a_length, const std::size_t b_length,
+      const std::size_t output_size) {
     using block_t = struct alignas(kernel_size * sizeof(T)) {};
-
-    const auto a_length = a_end - a_start;
-    const auto b_length = b_end - b_start;
 
     static constexpr auto VECTOR_COUNT = kernel_size / count_per_vector;
     static constexpr auto MERGE_NETWORK_INPUT_SIZE = VECTOR_COUNT * 2;
@@ -244,13 +242,13 @@ class AbstractTwoWayMerge {
     const auto a_rounded_length = a_length & ALIGNMENT_BIT_MASK;
     const auto b_rounded_length = b_length & ALIGNMENT_BIT_MASK;
 
-    auto number_of_slots = output_slots;
-    auto remaining_slots = output_slots & ~ALIGNMENT_BIT_MASK;
+    auto number_of_slots = output_size;
+    auto remaining_slots = output_size & ~ALIGNMENT_BIT_MASK;
     number_of_slots -= remaining_slots;
 
-    auto a_index = a_start;
-    auto b_index = b_start;
-    auto output_index = output_start;
+    auto a_index = count_reads_a;
+    auto b_index = count_reads_b;
+    auto output_index = count_writes;
 
     auto& out = output_address;
 
@@ -297,9 +295,9 @@ class AbstractTwoWayMerge {
         upper_merge_output.storeu(reinterpret_cast<T*>(b_pointer));
       }
 
-      a_index = a_start + (reinterpret_cast<T*>(a_pointer) - a_address);
-      b_index = b_start + (reinterpret_cast<T*>(b_pointer) - b_address);
-      output_index = output_start + (reinterpret_cast<T*>(output_pointer) - out);
+      a_index = count_reads_a + (reinterpret_cast<T*>(a_pointer) - a_address);
+      b_index = count_reads_b + (reinterpret_cast<T*>(b_pointer) - b_address);
+      output_index = count_writes + (reinterpret_cast<T*>(output_pointer) - out);
 
       a_address = reinterpret_cast<T*>(a_pointer);
       b_address = reinterpret_cast<T*>(b_pointer);
@@ -322,10 +320,9 @@ class AbstractTwoWayMerge {
       a_address += cmp;
       b_address += cmp_neg;
     }
-    a_start = a_index;
-    b_start = b_index;
-    output_start = output_index;
-    output_slots = number_of_slots;
+    count_reads_a = a_index;
+    count_reads_b = b_index;
+    count_writes = output_index;
   }
 };
 }  // namespace hyrise::simd_sort

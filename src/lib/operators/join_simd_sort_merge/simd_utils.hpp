@@ -11,12 +11,12 @@
 #define L2_CACHE_SIZE 262144  // Default value (256KiB)
 #endif
 
+namespace hyrise::simd_sort {
+
 #define LOWER_HALVES 0, 1, 4, 5
 #define UPPER_HALVES 2, 3, 6, 7
 #define INTERLEAVE_LOWERS 0, 4, 1, 5
 #define INTERLEAVE_UPPERS 2, 6, 3, 7
-
-namespace hyrise::simd_sort {
 
 template <class T, std::size_t alignment = 1>
 using aligned_vector = std::vector<T, boost::alignment::aligned_allocator<T, alignment>>;

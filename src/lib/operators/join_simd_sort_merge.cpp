@@ -216,15 +216,7 @@ simd_sort::simd_vector<SimdElement> merge_sorted_buckets(PerThread<RadixPartitio
   }
 
   auto multiway_merger = multiway_merging::MutliwayMerger<choose_count_per_vector(), SortingType>(sorted_buckets);
-  auto merged_output = std::move(multiway_merger.merge());
-
-  DebugAssert(std::is_sorted(merged_output.begin(), merged_output.end(),
-                             [](const auto& left, const auto& right) {
-                               return left.key < right.key;
-                             }),
-              "Output of Multiway-Merging is not sorted by key.");
-
-  return merged_output;
+  return std::move(multiway_merger.merge());
 }
 
 template <typename SortingType, typename ColumnType>
