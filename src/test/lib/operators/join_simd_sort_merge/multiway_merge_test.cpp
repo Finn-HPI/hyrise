@@ -48,7 +48,7 @@ std::vector<radix_partition::Bucket> generate_sorted_buckets(const size_t num_bu
     bucket.data = reinterpret_cast<SimdElement*>(bucket_data[bucket_index].data());
     bucket.size = bucket_data[bucket_index].size();
     // Sort internal bucket data
-    std::sort(bucket.template begin<int64_t>(), bucket.template end<int64_t>());
+    std::sort(bucket.template begin<T>(), bucket.template end<T>());
     EXPECT_TRUE(std::is_sorted(bucket.template begin<T>(), bucket.template end<T>()));
   }
   return buckets;
@@ -79,115 +79,130 @@ simd_sort::simd_vector<SimdElement> merge_sorted_buckets_naive(std::vector<radix
 }
 
 TEST_F(MultiwayMergeTest, NoLeaves) {
-  using SortingType = int64_t;
+  auto test = [&]<typename SortingType, size_t count_per_vector>() {
+    const auto count_leaves = size_t{0};
 
-  constexpr auto COUNT_PER_VECTOR = 4;
+    auto bucket_data = std::vector<simd_sort::simd_vector<SortingType>>(count_leaves);
+    auto sorted_buckets = std::vector<radix_partition::Bucket>{};
 
-  const auto count_leaves = size_t{0};
+    // Naive merging.
 
-  auto bucket_data = std::vector<simd_sort::simd_vector<SortingType>>(count_leaves);
-  auto sorted_buckets = std::vector<radix_partition::Bucket>{};
+    auto merged_output = merge_sorted_buckets_naive<SortingType>(sorted_buckets);
+    EXPECT_TRUE(std::is_sorted(merged_output.begin(), merged_output.end(), [](auto& left, auto& right) {
+      return *reinterpret_cast<SortingType*>(&left) < *reinterpret_cast<SortingType*>(&right);
+    }));
 
-  // Naive merging.
+    auto sorted_bucket_ptrs = std::vector<std::unique_ptr<radix_partition::Bucket>>{};
 
-  auto merged_output = merge_sorted_buckets_naive<SortingType>(sorted_buckets);
-  EXPECT_TRUE(std::is_sorted(merged_output.begin(), merged_output.end(), [](auto& left, auto& right) {
-    return *reinterpret_cast<SortingType*>(&left) < *reinterpret_cast<SortingType*>(&right);
-  }));
+    // Multiway merging.
+    auto multiway_merger = multiway_merging::MultiwayMerger<count_per_vector, SortingType>(sorted_bucket_ptrs);
+    auto multiway_merged_output = multiway_merger.merge();
 
-  auto sorted_bucket_ptrs = std::vector<std::unique_ptr<radix_partition::Bucket>>{};
+    EXPECT_TRUE(
+        std::is_sorted(multiway_merged_output.begin(), multiway_merged_output.end(), [](auto& left, auto& right) {
+          return *reinterpret_cast<SortingType*>(&left) < *reinterpret_cast<SortingType*>(&right);
+        }));
 
-  // Multiway merging.
-  auto multiway_merger = multiway_merging::MultiwayMerger<COUNT_PER_VECTOR, SortingType>(sorted_bucket_ptrs);
-  auto multiway_merged_output = multiway_merger.merge();
+    EXPECT_EQ(multiway_merged_output, merged_output);
+  };
+  test.template operator()<int64_t, 2>();
+  test.template operator()<double, 2>();
 
-  EXPECT_TRUE(std::is_sorted(multiway_merged_output.begin(), multiway_merged_output.end(), [](auto& left, auto& right) {
-    return *reinterpret_cast<SortingType*>(&left) < *reinterpret_cast<SortingType*>(&right);
-  }));
-
-  EXPECT_EQ(multiway_merged_output, merged_output);
+  test.template operator()<int64_t, 4>();
+  test.template operator()<double, 4>();
 }
 
 TEST_F(MultiwayMergeTest, LeafCountNumberOfTwo) {
-  using SortingType = int64_t;
-  constexpr auto MAX_COUNT = 256;
-  constexpr auto COUNT_PER_VECTOR = 4;
   constexpr auto MAX_BUCKET_SIZE = 4000;
+  constexpr auto MAX_COUNT = 256;
+  auto test = [&]<typename SortingType, size_t count_per_vector>() {
+    for (auto count_leaves = size_t{1}; count_leaves <= MAX_COUNT; count_leaves *= 2) {
+      std::cout << "Test merging with sorted bucket count: " << count_leaves << std::endl;
 
-  for (auto count_leaves = size_t{1}; count_leaves <= MAX_COUNT; count_leaves *= 2) {
-    std::cout << "Test merging with sorted bucket count: " << count_leaves << std::endl;
+      auto bucket_data = std::vector<simd_sort::simd_vector<SortingType>>(count_leaves);
+      auto sorted_buckets = generate_sorted_buckets<SortingType>(count_leaves, bucket_data, MAX_BUCKET_SIZE);
 
-    auto bucket_data = std::vector<simd_sort::simd_vector<SortingType>>(count_leaves);
-    auto sorted_buckets = generate_sorted_buckets<SortingType>(count_leaves, bucket_data, MAX_BUCKET_SIZE);
+      // Naive merging.
+      std::cout << "Run naive merging" << std::endl;
 
-    // Naive merging.
-    std::cout << "Run naive merging" << std::endl;
+      auto merged_output = merge_sorted_buckets_naive<SortingType>(sorted_buckets);
+      EXPECT_TRUE(std::is_sorted(merged_output.begin(), merged_output.end(), [](auto& left, auto& right) {
+        return *reinterpret_cast<SortingType*>(&left) < *reinterpret_cast<SortingType*>(&right);
+      }));
 
-    auto merged_output = merge_sorted_buckets_naive<SortingType>(sorted_buckets);
-    EXPECT_TRUE(std::is_sorted(merged_output.begin(), merged_output.end(), [](auto& left, auto& right) {
-      return *reinterpret_cast<SortingType*>(&left) < *reinterpret_cast<SortingType*>(&right);
-    }));
+      auto sorted_bucket_ptrs = std::vector<std::unique_ptr<radix_partition::Bucket>>();
+      sorted_bucket_ptrs.reserve(sorted_buckets.size());
+      for (auto& bucket : sorted_buckets) {
+        sorted_bucket_ptrs.push_back(std::make_unique<radix_partition::Bucket>(bucket));
+      }
 
-    auto sorted_bucket_ptrs = std::vector<std::unique_ptr<radix_partition::Bucket>>();
-    sorted_bucket_ptrs.reserve(sorted_buckets.size());
-    for (auto& bucket : sorted_buckets) {
-      sorted_bucket_ptrs.push_back(std::make_unique<radix_partition::Bucket>(bucket));
+      // Multiway merging.
+      std::cout << "Run multiway merging" << std::endl;
+
+      auto multiway_merger = multiway_merging::MultiwayMerger<count_per_vector, SortingType>(sorted_bucket_ptrs);
+      auto multiway_merged_output = multiway_merger.merge();
+
+      EXPECT_TRUE(
+          std::is_sorted(multiway_merged_output.begin(), multiway_merged_output.end(), [](auto& left, auto& right) {
+            return *reinterpret_cast<SortingType*>(&left) < *reinterpret_cast<SortingType*>(&right);
+          }));
+
+      EXPECT_EQ(multiway_merged_output, merged_output);
     }
+  };
 
-    // Multiway merging.
-    std::cout << "Run multiway merging" << std::endl;
+  test.template operator()<int64_t, 2>();
+  test.template operator()<double, 2>();
 
-    auto multiway_merger = multiway_merging::MultiwayMerger<COUNT_PER_VECTOR, SortingType>(sorted_bucket_ptrs);
-    auto multiway_merged_output = multiway_merger.merge();
-
-    EXPECT_TRUE(
-        std::is_sorted(multiway_merged_output.begin(), multiway_merged_output.end(), [](auto& left, auto& right) {
-          return *reinterpret_cast<SortingType*>(&left) < *reinterpret_cast<SortingType*>(&right);
-        }));
-
-    EXPECT_EQ(multiway_merged_output, merged_output);
-  }
+  test.template operator()<int64_t, 4>();
+  test.template operator()<double, 4>();
 }
 
 TEST_F(MultiwayMergeTest, LeafCountNotNumberOfTwo) {
-  using SortingType = int64_t;
-  constexpr auto COUNT_PER_VECTOR = 4;
   constexpr auto MAX_BUCKET_SIZE = 4000;
 
-  auto bucket_counts = std::vector<size_t>{0, 1, 2, 3, 4, 5, 6, 7, 14, 15, 30, 75, 90, 127, 160, 200, 212, 245};
+  auto test = [&]<typename SortingType, size_t count_per_vector>() {
+    auto bucket_counts = std::vector<size_t>{0, 1, 2, 3, 4, 5, 6, 7, 14, 15, 30, 75, 90, 127, 160, 200, 212, 245};
 
-  for (auto count_leaves : bucket_counts) {
-    std::cout << "Test merging with sorted bucket count: " << count_leaves << std::endl;
+    for (auto count_leaves : bucket_counts) {
+      std::cout << "Test merging with sorted bucket count: " << count_leaves << std::endl;
 
-    auto bucket_data = std::vector<simd_sort::simd_vector<SortingType>>(count_leaves);
-    auto sorted_buckets = generate_sorted_buckets<SortingType>(count_leaves, bucket_data, MAX_BUCKET_SIZE);
+      auto bucket_data = std::vector<simd_sort::simd_vector<SortingType>>(count_leaves);
+      auto sorted_buckets = generate_sorted_buckets<SortingType>(count_leaves, bucket_data, MAX_BUCKET_SIZE);
 
-    // Naive merging.
-    std::cout << "Run naive merging" << std::endl;
+      // Naive merging.
+      std::cout << "Run naive merging" << std::endl;
 
-    auto merged_output = merge_sorted_buckets_naive<SortingType>(sorted_buckets);
-    EXPECT_TRUE(std::is_sorted(merged_output.begin(), merged_output.end(), [](auto& left, auto& right) {
-      return *reinterpret_cast<SortingType*>(&left) < *reinterpret_cast<SortingType*>(&right);
-    }));
+      auto merged_output = merge_sorted_buckets_naive<SortingType>(sorted_buckets);
+      EXPECT_TRUE(std::is_sorted(merged_output.begin(), merged_output.end(), [](auto& left, auto& right) {
+        return *reinterpret_cast<SortingType*>(&left) < *reinterpret_cast<SortingType*>(&right);
+      }));
 
-    // Multiway merging.
-    std::cout << "Run multiway merging" << std::endl;
+      // Multiway merging.
+      std::cout << "Run multiway merging" << std::endl;
 
-    auto sorted_bucket_ptrs = std::vector<std::unique_ptr<radix_partition::Bucket>>();
-    sorted_bucket_ptrs.reserve(sorted_buckets.size());
-    for (auto& bucket : sorted_buckets) {
-      sorted_bucket_ptrs.push_back(std::make_unique<radix_partition::Bucket>(bucket));
+      auto sorted_bucket_ptrs = std::vector<std::unique_ptr<radix_partition::Bucket>>();
+      sorted_bucket_ptrs.reserve(sorted_buckets.size());
+      for (auto& bucket : sorted_buckets) {
+        sorted_bucket_ptrs.push_back(std::make_unique<radix_partition::Bucket>(bucket));
+      }
+      auto multiway_merger = multiway_merging::MultiwayMerger<count_per_vector, SortingType>(sorted_bucket_ptrs);
+      auto multiway_merged_output = multiway_merger.merge();
+
+      EXPECT_TRUE(
+          std::is_sorted(multiway_merged_output.begin(), multiway_merged_output.end(), [](auto& left, auto& right) {
+            return *reinterpret_cast<SortingType*>(&left) < *reinterpret_cast<SortingType*>(&right);
+          }));
+
+      EXPECT_EQ(multiway_merged_output, merged_output);
     }
-    auto multiway_merger = multiway_merging::MultiwayMerger<COUNT_PER_VECTOR, SortingType>(sorted_bucket_ptrs);
-    auto multiway_merged_output = multiway_merger.merge();
+  };
 
-    EXPECT_TRUE(
-        std::is_sorted(multiway_merged_output.begin(), multiway_merged_output.end(), [](auto& left, auto& right) {
-          return *reinterpret_cast<SortingType*>(&left) < *reinterpret_cast<SortingType*>(&right);
-        }));
+  test.template operator()<int64_t, 2>();
+  test.template operator()<double, 2>();
 
-    EXPECT_EQ(multiway_merged_output, merged_output);
-  }
+  test.template operator()<int64_t, 4>();
+  test.template operator()<double, 4>();
 }
 
 }  // namespace hyrise

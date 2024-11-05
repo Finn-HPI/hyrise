@@ -18,6 +18,18 @@ class JoinSimdSortMerge : public AbstractJoinOperator {
                     const std::vector<OperatorJoinPredicate>& secondary_predicates = {});
 
   const std::string& name() const override;
+
+  enum class OperatorSteps : uint8_t {
+    LeftSideMaterializingAndTransform,
+    RightSideMaterializingAndTransform,
+    LeftSidePartitionAndSort,
+    LeftSideMultiwayMerging,
+    RightSidePartitionAndSort,
+    RightSideMultiwayMerging,
+    FindJoinPartner,
+    OutputWriting
+  };
+
   static constexpr auto JOB_SPAWN_THRESHOLD = 500;
 
  protected:

@@ -144,6 +144,13 @@ class MultiwayMerger {
 
       auto& buffer = _nodes[node_index];
 
+      DebugAssert(std::is_sorted(left_bucket.template begin<T>(), left_bucket.template end<T>()),
+                  "Left bucket not sorted");
+      DebugAssert(std::is_sorted(right_bucket.template begin<T>(), right_bucket.template end<T>()),
+                  "Right bucket not sorted");
+
+      DebugAssert(buffer.debug_is_sorted<T>(_buffer_size), "Before merging from leaves, the buffer is not sorted.");
+
       const auto num_items_read = _load_and_merge_from_leaves(buffer, left_bucket, right_bucket);
 
       DebugAssert(buffer.debug_is_sorted<T>(_buffer_size), "After merging from leaves, the buffer is not sorted.");

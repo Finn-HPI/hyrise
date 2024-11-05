@@ -1,7 +1,8 @@
 #pragma once
 
-#include <operators/join_simd_sort_merge/util.hpp>
 #include <span>
+
+#include "util.hpp"
 
 namespace hyrise::circular_buffer {
 
@@ -216,16 +217,19 @@ inline bool CircularBuffer::debug_is_sorted(const size_t buffer_size) {
   auto first_chunk = BufferChunk{_tail, (_tail < _head) ? _head : buffer_size};
   auto second_chunk = BufferChunk{0, (_tail < _head) ? 0 : _head};
 
-  auto last_element = std::numeric_limits<T>::min();
+  auto last_element = std::numeric_limits<T>::lowest();
 
   auto is_sorted = [&](BufferChunk& chunk) {
     if (chunk.size() == 0) {
       return true;
     }
+
     auto elements = std::span(_buffer + chunk.start, chunk.size());
+
     if (*reinterpret_cast<T*>(&elements.front()) < last_element) {
       return false;
     }
+
     last_element = *reinterpret_cast<T*>(&elements.back());
     return std::is_sorted(elements.begin(), elements.end(), [](auto& left, auto& right) {
       return *reinterpret_cast<T*>(&left) < *reinterpret_cast<T*>(&right);

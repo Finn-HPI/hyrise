@@ -9,6 +9,7 @@
 #include "operators/join_simd_sort_merge/radix_partitioning.hpp"
 #include "operators/join_simd_sort_merge/simd_sort.hpp"
 #include "operators/multi_predicate_join/multi_predicate_join_evaluator.hpp"
+#include "utils/timer.hpp"
 
 #if defined(__x86_64__)
 #include "immintrin.h"
@@ -101,7 +102,8 @@ JoinSimdSortMerge::JoinSimdSortMerge(const std::shared_ptr<const AbstractOperato
                                      const std::shared_ptr<const AbstractOperator>& right, const JoinMode mode,
                                      const OperatorJoinPredicate& primary_predicate,
                                      const std::vector<OperatorJoinPredicate>& secondary_predicates)
-    : AbstractJoinOperator(OperatorType::JoinSortMerge, left, right, mode, primary_predicate, secondary_predicates) {}
+    : AbstractJoinOperator(OperatorType::JoinSortMerge, left, right, mode, primary_predicate, secondary_predicates,
+                           std::make_unique<OperatorPerformanceData<OperatorSteps>>()) {}
 
 std::shared_ptr<AbstractOperator> JoinSimdSortMerge::_on_deep_copy(
     const std::shared_ptr<AbstractOperator>& copied_left_input,
@@ -133,7 +135,8 @@ std::shared_ptr<const Table> JoinSimdSortMerge::_on_execute() {
     using ColumnDataType = typename decltype(type)::type;
     _impl = std::make_unique<JoinSimdSortMergeImpl<ColumnDataType>>(
         *this, left_input_table_ptr, right_input_table_ptr, _primary_predicate.column_ids.first,
-        _primary_predicate.column_ids.second, _primary_predicate.predicate_condition, _mode, _secondary_predicates);
+        _primary_predicate.column_ids.second, _primary_predicate.predicate_condition, _mode, _secondary_predicates,
+        dynamic_cast<OperatorPerformanceData<JoinSimdSortMerge::OperatorSteps>&>(*performance_data));
   });
 
   return _impl->_on_execute();
@@ -219,47 +222,32 @@ simd_sort::simd_vector<SimdElement> merge_sorted_buckets(PerThread<RadixPartitio
   return std::move(multiway_merger.merge());
 }
 
-template <typename SortingType, typename ColumnType>
-PerHash<simd_sort::simd_vector<SimdElement>> sort_relation(SimdElementList& simd_elements) {
-  const auto num_items = simd_elements.size();
-  const auto base_size_per_thread = num_items / THREAD_COUNT;
-  const auto remainder = num_items % THREAD_COUNT;
-
-  using RadixPartition = RadixPartition<ColumnType>;
-
-  auto thread_partitions = PerThread<RadixPartition>{};
-  auto thread_inputs = PerThread<std::span<SimdElement>>{};
-
-  // Split simd_elements into THREAD_COUNT many sections.
-  auto* input_start_address = simd_elements.data();
-  for (auto thread_index = std::size_t{0}, offset = std::size_t{0}; thread_index < THREAD_COUNT; ++thread_index) {
-    auto current_range_size = base_size_per_thread + (thread_index < remainder ? 1 : 0);
-    thread_inputs[thread_index] = {input_start_address + offset, input_start_address + offset + current_range_size};
-    offset += current_range_size;
-  }
-
-  spawn_and_wait_per_thread(thread_inputs, [&thread_partitions](auto& elements, std::size_t thread_index) {
-    thread_partitions[thread_index] = construct_and_sort_partitions<SortingType, ColumnType>(elements);
-  });
-
-#if HYRISE_DEBUG
-  for (auto thread_index = 0u; thread_index < THREAD_COUNT; ++thread_index) {
-    const auto& buckets = thread_partitions[thread_index].buckets();
-    for (auto bucket : buckets) {
-      // Check that each bucket is sorted according to SortingType and the key of the SimdElement;
-      DebugAssert(std::is_sorted(bucket.template begin<SortingType>(), bucket.template end<SortingType>()),
-                  "Partition was not sorted correctly.");
-    }
-  }
-#endif
-
-  auto merged_outputs = PerHash<simd_sort::simd_vector<SimdElement>>{};
-  spawn_and_wait_per_hash(merged_outputs, [&thread_partitions](auto& merged_output, std::size_t bucket_index) {
-    merged_output = merge_sorted_buckets<SortingType>(thread_partitions, bucket_index);
-  });
-
-  return merged_outputs;
-}
+// template <typename SortingType, typename RadixPartition>
+// simd_sort::simd_vector<SimdElement> merge_sorted_buckets(PerThread<RadixPartition>& partitions,
+//                                                          std::size_t bucket_index) {
+//   // From each partition take the bucket at bucket_index and merge them into one sorted list.
+//   auto temp_a = simd_sort::simd_vector<SortingType>{};
+//   auto temp_b = simd_sort::simd_vector<SortingType>{};
+//   auto& merged_last = temp_a;
+//   auto& output = temp_b;
+//   for (auto& partition : partitions) {
+//     auto& bucket = partition.bucket(bucket_index);
+//     std::merge(merged_last.begin(), merged_last.end(), bucket.template begin<SortingType>(),
+//                bucket.template end<SortingType>(), std::back_inserter(output));
+//     std::swap(merged_last, output);
+//     output.clear();
+//   }
+//
+//   DebugAssert(std::is_sorted(merged_last.begin(), merged_last.end()), "Merged output is not sorted.");
+//
+//   auto final_output = simd_sort::simd_vector<SimdElement>();
+//   final_output.reserve(merged_last.size());
+//   for (auto& element : merged_last) {
+//     final_output.push_back(std::bit_cast<SimdElement>(element));
+//   }
+//
+//   return final_output;
+// }
 
 template <typename ColumnType>
 class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperatorImpl {
@@ -267,10 +255,12 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
   JoinSimdSortMergeImpl(JoinSimdSortMerge& sort_merge_join, const std::shared_ptr<const Table>& left_input_table,
                         const std::shared_ptr<const Table>& right_input_table, ColumnID left_column_id,
                         ColumnID right_column_id, const PredicateCondition op, JoinMode mode,
-                        const std::vector<OperatorJoinPredicate>& secondary_join_predicates)
+                        const std::vector<OperatorJoinPredicate>& secondary_join_predicates,
+                        OperatorPerformanceData<JoinSimdSortMerge::OperatorSteps>& performance_data)
       : _sort_merge_join{sort_merge_join},
         _left_input_table{left_input_table},
         _right_input_table{right_input_table},
+        _performance{performance_data},
         _primary_left_column_id{left_column_id},
         _primary_right_column_id{right_column_id},
         _primary_predicate_condition{op},
@@ -285,6 +275,9 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
   JoinSimdSortMerge& _sort_merge_join;
   const std::shared_ptr<const Table> _left_input_table;
   const std::shared_ptr<const Table> _right_input_table;
+
+  OperatorPerformanceData<JoinSimdSortMerge::OperatorSteps>& _performance;
+
   const ColumnID _primary_left_column_id;
   const ColumnID _primary_right_column_id;
 
@@ -658,23 +651,83 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
     });
   }
 
+  template <typename SortingType, JoinSimdSortMerge::OperatorSteps partition_and_sort_step,
+            JoinSimdSortMerge::OperatorSteps multiway_merge_step>
+  PerHash<simd_sort::simd_vector<SimdElement>> _sort_relation(SimdElementList& simd_elements) {
+    auto timer = Timer{};
+
+    const auto num_items = simd_elements.size();
+    const auto base_size_per_thread = num_items / THREAD_COUNT;
+    const auto remainder = num_items % THREAD_COUNT;
+
+    using RadixPartition = RadixPartition<ColumnType>;
+
+    auto thread_partitions = PerThread<RadixPartition>{};
+    auto thread_inputs = PerThread<std::span<SimdElement>>{};
+
+    // Split simd_elements into THREAD_COUNT many sections.
+    auto* input_start_address = simd_elements.data();
+    for (auto thread_index = std::size_t{0}, offset = std::size_t{0}; thread_index < THREAD_COUNT; ++thread_index) {
+      auto current_range_size = base_size_per_thread + (thread_index < remainder ? 1 : 0);
+      thread_inputs[thread_index] = {input_start_address + offset, input_start_address + offset + current_range_size};
+      offset += current_range_size;
+    }
+
+    spawn_and_wait_per_thread(thread_inputs, [&thread_partitions](auto& elements, std::size_t thread_index) {
+      thread_partitions[thread_index] = construct_and_sort_partitions<SortingType, ColumnType>(elements);
+    });
+
+    _performance.set_step_runtime(partition_and_sort_step, timer.lap());
+
+#if HYRISE_DEBUG
+    for (auto thread_index = 0u; thread_index < THREAD_COUNT; ++thread_index) {
+      const auto& buckets = thread_partitions[thread_index].buckets();
+      for (auto bucket : buckets) {
+        // Check that each bucket is sorted according to SortingType and the key of the SimdElement;
+        DebugAssert(std::is_sorted(bucket.template begin<SortingType>(), bucket.template end<SortingType>()),
+                    "Partition was not sorted correctly.");
+      }
+    }
+#endif
+
+    auto merged_outputs = PerHash<simd_sort::simd_vector<SimdElement>>{};
+    spawn_and_wait_per_hash(merged_outputs, [&thread_partitions](auto& merged_output, std::size_t bucket_index) {
+      merged_output = merge_sorted_buckets<SortingType>(thread_partitions, bucket_index);
+    });
+
+    _performance.set_step_runtime(multiway_merge_step, timer.lap());
+
+    return merged_outputs;
+  }
+
  public:
   std::shared_ptr<const Table> _on_execute() override {
+    using SortingType = double;
+    // using SortingType = int64_t;
+
     std::cout << "Run JoinSimdSortMerg execute!!!" << std::endl;
     const auto include_null_left = (_mode == JoinMode::Left || _mode == JoinMode::FullOuter);
     const auto include_null_right = (_mode == JoinMode::Right || _mode == JoinMode::FullOuter);
 
+    auto timer = Timer{};
+
     materialize_column_and_transform_to_simd_format<ColumnType>(_left_input_table, _primary_left_column_id,
                                                                 _materialized_values_left, _simd_elements_left,
                                                                 _null_rows_left, include_null_left);
+    _performance.set_step_runtime(OperatorSteps::LeftSideMaterializingAndTransform, timer.lap());
 
     materialize_column_and_transform_to_simd_format<ColumnType>(_right_input_table, _primary_right_column_id,
                                                                 _materialized_values_right, _simd_elements_right,
                                                                 _null_rows_right, include_null_right);
+    _performance.set_step_runtime(OperatorSteps::RightSideMaterializingAndTransform, timer.lap());
 
-    using SortingType = int64_t;
-    _sorted_per_hash_left = std::move(sort_relation<SortingType, ColumnType>(_simd_elements_left));
-    _sorted_per_hash_right = std::move(sort_relation<SortingType, ColumnType>(_simd_elements_right));
+    _sorted_per_hash_left = std::move(
+        _sort_relation<SortingType, OperatorSteps::LeftSidePartitionAndSort, OperatorSteps::LeftSideMultiwayMerging>(
+            _simd_elements_left));
+
+    _sorted_per_hash_right = std::move(
+        _sort_relation<SortingType, OperatorSteps::RightSidePartitionAndSort, OperatorSteps::RightSideMultiwayMerging>(
+            _simd_elements_right));
 
     _perform_join();
 
@@ -700,6 +753,8 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
       }
     }
 
+    _performance.set_step_runtime(OperatorSteps::FindJoinPartner, timer.lap());
+
     const auto create_left_side_pos_lists_by_segment = (_left_input_table->type() == TableType::References);
     const auto create_right_side_pos_lists_by_segment = (_right_input_table->type() == TableType::References);
 
@@ -720,10 +775,10 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
       if (_sort_merge_join._primary_predicate.predicate_condition == PredicateCondition::Equals &&
           _mode == JoinMode::Inner) {
         chunk->set_immutable();
-        // chunk->set_individually_sorted_by({SortColumnDefinition(left_join_column, SortMode::Ascending),
-        //                                    SortColumnDefinition(right_join_column, SortMode::Ascending)});
       }
     }
+
+    _performance.set_step_runtime(OperatorSteps::OutputWriting, timer.lap());
 
     auto result_table = _sort_merge_join._build_output_table(std::move(output_chunks));
 
