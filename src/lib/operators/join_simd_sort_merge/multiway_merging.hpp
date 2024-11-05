@@ -279,18 +279,41 @@ class MultiwayMerger {
     return {count_reads_left, count_reads_right};
   }
 
-  void _merge_children_into_node(CircularBuffer& buffer, CircularBuffer& left, CircularBuffer& right,
-                                 bool left_child_done, bool right_child_done) {
+  template <typename Output>
+  bool _merge_other_if_one_done(Output& output, CircularBuffer& left, CircularBuffer& right, bool left_child_done,
+                                bool right_child_done, bool is_write_to_output [[maybe_unused]] = false) {
     if (right_child_done && right.empty()) {
       if (!left_child_done && !left.empty()) {
-        _write_to_destination(buffer, left);
-        return;
+        _write_to_destination(output, left);
+        DebugAssert(left.empty() || !is_write_to_output, "Left buffer should be empty if written to final output.");
+        return true;
       }
     } else if (left_child_done && left.empty()) {
       if (!right_child_done && !right.empty()) {
-        _write_to_destination(buffer, right);
-        return;
+        _write_to_destination(output, right);
+        DebugAssert(right.empty() || !is_write_to_output, "Right buffer should be empty if written to final output.");
+        return true;
       }
+    }
+    return false;
+  }
+
+  template <typename Output>
+  void _write_elements_from_remaining_bucket(Output& output, CircularBuffer& left, CircularBuffer& right) {
+    auto write_elements = [](std::span<SimdElement> src, std::span<SimdElement> destination) {
+      std::ranges::copy(src, destination.begin());
+    };
+    if (!left.empty()) {
+      left.read_and_write_to(output, _buffer_size, write_elements);
+    } else {
+      right.read_and_write_to(output, _buffer_size, write_elements);
+    }
+  }
+
+  void _merge_children_into_node(CircularBuffer& buffer, CircularBuffer& left, CircularBuffer& right,
+                                 bool left_child_done, bool right_child_done) {
+    if (_merge_other_if_one_done(buffer, left, right, left_child_done, right_child_done)) {
+      return;
     }
 
     while (buffer.fill_count() < _buffer_size && (!left.empty() && !right.empty())) {
@@ -305,31 +328,13 @@ class MultiwayMerger {
       return;
     }
 
-    auto write_elements = [](std::span<SimdElement> src, std::span<SimdElement> destination) {
-      std::ranges::copy(src, destination.begin());
-    };
-
-    if (!left.empty()) {
-      left.read_and_write_to(buffer, _buffer_size, write_elements);
-    } else {
-      right.read_and_write_to(buffer, _buffer_size, write_elements);
-    }
+    _write_elements_from_remaining_bucket(buffer, left, right);
   }
 
   void _merge_children_into_output(SimdElement*& output, CircularBuffer& left, CircularBuffer& right,
                                    bool left_child_done, bool right_child_done) {
-    if (right_child_done && right.empty()) {
-      if (!left_child_done && !left.empty()) {
-        _write_to_destination(output, left);
-        DebugAssert(left.empty(), "Left buffer should be empty.");
-        return;
-      }
-    } else if (left_child_done && left.empty()) {
-      if (!right_child_done && !right.empty()) {
-        _write_to_destination(output, right);
-        DebugAssert(right.empty(), "Right buffer should be empty.");
-        return;
-      }
+    if (_merge_other_if_one_done(output, left, right, left_child_done, right_child_done, true)) {
+      return;
     }
 
     while (!left.empty() && !right.empty()) {
@@ -343,15 +348,7 @@ class MultiwayMerger {
       return;
     }
 
-    auto write_elements = [](std::span<SimdElement> src, std::span<SimdElement> destination) {
-      std::ranges::copy(src, destination.begin());
-    };
-
-    if (!left.empty()) {
-      left.read_and_write_to(output, _buffer_size, write_elements);
-    } else {
-      right.read_and_write_to(output, _buffer_size, write_elements);
-    }
+    _write_elements_from_remaining_bucket(output, left, right);
   }
 
   template <typename Output>
