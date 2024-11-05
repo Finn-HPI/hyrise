@@ -8,13 +8,13 @@
 namespace hyrise::multiway_merging {
 
 template <size_t count_per_vector, typename T>
-class MutliwayMerger {
+class MultiwayMerger {
   using Bucket = radix_partition::Bucket;
   using CircularBuffer = circular_buffer::CircularBuffer;
   using TwoWayMerge = simd_sort::TwoWayMerge<count_per_vector, T>;
 
  public:
-  explicit MutliwayMerger(std::vector<std::unique_ptr<Bucket>>& sorted_buckets)
+  explicit MultiwayMerger(std::vector<std::unique_ptr<Bucket>>& sorted_buckets)
       : _leaf_count(std::bit_ceil(sorted_buckets.size())),
         _sorted_buckets(std::move(sorted_buckets)),
         _nodes(2 * _leaf_count),
@@ -27,13 +27,37 @@ class MutliwayMerger {
   }
 
   simd_sort::simd_vector<SimdElement> merge() {
-    auto merged_output = simd_sort::simd_vector<SimdElement>(_total_output_size);
-    auto* output = merged_output.data();
-    while (!_finished) {
-      _finished = true;
-      _load_from_leaves();
-      _execute_ready_nodes(output);
+    // Begin handling of edge cases.
+    if (_sorted_buckets.empty()) {
+      return {};
     }
+
+    auto merged_output = simd_sort::simd_vector<SimdElement>(_total_output_size);
+
+    if (_sorted_buckets.size() == ONE_REMAINING) {
+      std::ranges::copy(_sorted_buckets[0]->elements(), merged_output.begin());
+      return merged_output;
+    }
+
+    if (_leaf_count == TWO_REMAINING) {
+      auto& left = _sorted_buckets[0];
+      auto& right = _sorted_buckets[1];
+      TwoWayMerge::template merge_variable_length<count_per_vector * 4>(
+          left->template begin<T>(), right->template begin<T>(), reinterpret_cast<T*>(merged_output.data()), left->size,
+          right->size);
+
+      DebugAssert(std::is_sorted(merged_output.begin(), merged_output.end(),
+                                 [](auto& left, auto& right) {
+                                   return *reinterpret_cast<T*>(&left) < *reinterpret_cast<T*>(&right);
+                                 }),
+                  "Merged output is not sorted.");
+
+      return merged_output;
+    }
+
+    // End handling of edge cases.
+
+    _execute(merged_output.data());
 
     DebugAssert(std::is_sorted(merged_output.begin(), merged_output.end(),
                                [](auto& left, auto& right) {
@@ -90,6 +114,14 @@ class MutliwayMerger {
       }
       _nodes[node_index].set_buffer(_fifo_buffer.data() + buffer_index * _buffer_size);
       ++buffer_index;
+    }
+  }
+
+  void _execute(SimdElement* output) {
+    while (!_finished) {
+      _finished = true;
+      _load_from_leaves();
+      _execute_ready_nodes(output);
     }
   }
 
@@ -348,6 +380,8 @@ class MutliwayMerger {
   // clang-format off
   
   static constexpr NodeIndex ROOT = 1;
+  static constexpr auto ONE_REMAINING = 1;
+  static constexpr auto TWO_REMAINING = 2;
 
   static NodeIndex _parent(NodeIndex node) { return node / 2; }
   static NodeIndex _left_child(NodeIndex node) { return 2 * node; }
