@@ -15,8 +15,11 @@
 #include "immintrin.h"
 #endif
 
+#include <algorithm>
 #include <iterator>
+#include <limits>
 #include <span>
+#include <utility>
 
 #include "operators/join_simd_sort_merge/column_materializer.hpp"
 #include "types.hpp"
@@ -90,7 +93,8 @@ struct Data32BitCompression<hyrise::pmr_string> {
 
 namespace hyrise {
 
-using namespace radix_partition;
+using radix_partition::Bucket;
+using radix_partition::RadixPartition;
 
 bool JoinSimdSortMerge::supports(const JoinConfiguration config) {
   return config.predicate_condition == PredicateCondition::Equals && config.left_data_type == config.right_data_type &&
@@ -204,7 +208,7 @@ RadixPartition<ColumnType> construct_and_sort_partitions(std::span<SimdElement> 
   }
 
   return radix_partitioner;
-};
+}
 
 template <typename SortingType, typename RadixPartition>
 simd_sort::simd_vector<SimdElement> merge_sorted_buckets(PerThread<RadixPartition>& partitions,

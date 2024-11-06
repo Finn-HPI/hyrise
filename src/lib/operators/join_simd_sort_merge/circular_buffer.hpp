@@ -1,5 +1,7 @@
 #pragma once
 
+#include <algorithm>
+#include <limits>
 #include <span>
 
 #include "util.hpp"

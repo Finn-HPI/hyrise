@@ -1,5 +1,11 @@
 #pragma once
 
+#include <algorithm>
+#include <memory>
+#include <type_traits>
+#include <utility>
+#include <vector>
+
 #include "operators/join_simd_sort_merge/circular_buffer.hpp"
 #include "operators/join_simd_sort_merge/radix_partitioning.hpp"
 #include "operators/join_simd_sort_merge/two_way_merge.hpp"
@@ -35,7 +41,7 @@ class MultiwayMerger {
     auto merged_output = simd_sort::simd_vector<SimdElement>(_total_output_size);
 
     if (_sorted_buckets.size() == ONE_REMAINING) {
-      std::ranges::copy(_sorted_buckets[0]->elements(), merged_output.begin());
+      std::ranges::copy(_sorted_buckets.front()->elements(), merged_output.begin());
       return merged_output;
     }
 
@@ -54,7 +60,6 @@ class MultiwayMerger {
 
       return merged_output;
     }
-
     // End handling of edge cases.
 
     _execute(merged_output.data());
@@ -64,7 +69,6 @@ class MultiwayMerger {
                                  return *reinterpret_cast<T*>(&left) < *reinterpret_cast<T*>(&right);
                                }),
                 "Merged output is not sorted.");
-
     return merged_output;
   }
 
@@ -183,8 +187,8 @@ class MultiwayMerger {
           DebugAssert(left_child_buffer.debug_is_sorted<T>(_buffer_size), "Left child buffer is not sorted.");
           DebugAssert(right_child_buffer.debug_is_sorted<T>(_buffer_size), "Right child buffer is not sorted.");
 
-          _merge_children_into_node(buffer, left_child_buffer, right_child_buffer, _done[left_child_index],
-                                    _done[right_child_index]);
+          _merge_children_into_parent(buffer, left_child_buffer, right_child_buffer, _done[left_child_index],
+                                      _done[right_child_index]);
           DebugAssert(buffer.debug_is_sorted<T>(_buffer_size),
                       "After merging from inner child nodes, the buffer is not sorted.");
         }
@@ -203,7 +207,7 @@ class MultiwayMerger {
     DebugAssert(_nodes[left_index].debug_is_sorted<T>(_buffer_size), "Left child buffer is not sorted.");
     DebugAssert(_nodes[right_index].debug_is_sorted<T>(_buffer_size), "Right child buffer is not sorted.");
 
-    _merge_children_into_output(output, _nodes[left_index], _nodes[right_index], _done[left_index], _done[right_index]);
+    _merge_children_into_parent(output, _nodes[left_index], _nodes[right_index], _done[left_index], _done[right_index]);
 
     auto written_output = std::span(output_before_merging, output);
     DebugAssert(std::is_sorted(written_output.begin(), written_output.end(),
@@ -212,7 +216,7 @@ class MultiwayMerger {
                                }),
                 "Newly written output is not sorted.");
 #else
-    _merge_children_into_output(output, _nodes[left_index], _nodes[right_index], _done[left_index], _done[right_index]);
+    _merge_children_into_parent(output, _nodes[left_index], _nodes[right_index], _done[left_index], _done[right_index]);
 #endif
   }
 
@@ -288,17 +292,18 @@ class MultiwayMerger {
 
   template <typename Output>
   bool _merge_other_if_one_done(Output& output, CircularBuffer& left, CircularBuffer& right, bool left_child_done,
-                                bool right_child_done, bool is_write_to_output [[maybe_unused]] = false) {
+                                bool right_child_done) {
+    constexpr auto WRITE_TO_NODE_BUFFER = std::is_same_v<Output, CircularBuffer>;
     if (right_child_done && right.empty()) {
       if (!left_child_done && !left.empty()) {
         _write_to_destination(output, left);
-        DebugAssert(left.empty() || !is_write_to_output, "Left buffer should be empty if written to final output.");
+        DebugAssert(left.empty() || WRITE_TO_NODE_BUFFER, "Left buffer should be empty if written to final output.");
         return true;
       }
     } else if (left_child_done && left.empty()) {
       if (!right_child_done && !right.empty()) {
         _write_to_destination(output, right);
-        DebugAssert(right.empty() || !is_write_to_output, "Right buffer should be empty if written to final output.");
+        DebugAssert(right.empty() || WRITE_TO_NODE_BUFFER, "Right buffer should be empty if written to final output.");
         return true;
       }
     }
@@ -317,41 +322,28 @@ class MultiwayMerger {
     }
   }
 
-  void _merge_children_into_node(CircularBuffer& buffer, CircularBuffer& left, CircularBuffer& right,
-                                 bool left_child_done, bool right_child_done) {
-    if (_merge_other_if_one_done(buffer, left, right, left_child_done, right_child_done)) {
+  template <typename Output>
+  void _merge_children_into_parent(Output& output, CircularBuffer& left, CircularBuffer& right, bool left_child_done,
+                                   bool right_child_done) {
+    if (_merge_other_if_one_done(output, left, right, left_child_done, right_child_done)) {
       return;
     }
 
-    while (buffer.fill_count() < _buffer_size && (!left.empty() && !right.empty())) {
-      left.merge_and_write(right, buffer, _buffer_size, _merge_children);
-    }
+    auto has_free_space = [&]() {
+      if constexpr (std::is_same_v<Output, CircularBuffer>) {
+        return output.fill_count() < _buffer_size;
+      }
+      return true;
+    };
 
-    DebugAssert((left.empty() || right.empty()) || buffer.fill_count() == _buffer_size,
-                "After merging one child buffer has to be empty or the node buffer full.");
-
-    const bool both_children_done = right_child_done && left_child_done;
-    if (!both_children_done || buffer.fill_count() == _buffer_size) {
-      return;
-    }
-
-    _write_elements_from_remaining_bucket(buffer, left, right);
-  }
-
-  void _merge_children_into_output(SimdElement*& output, CircularBuffer& left, CircularBuffer& right,
-                                   bool left_child_done, bool right_child_done) {
-    if (_merge_other_if_one_done(output, left, right, left_child_done, right_child_done, true)) {
-      return;
-    }
-
-    while (!left.empty() && !right.empty()) {
+    while (has_free_space() && (!left.empty() && !right.empty())) {
       left.merge_and_write(right, output, _buffer_size, _merge_children);
     }
 
-    DebugAssert(left.empty() || right.empty(), "After merging one child buffer has to be empty.");
+    DebugAssert((left.empty() || right.empty()) || !has_free_space(),
+                "After merging one child buffer has to be empty or the output full.");
 
-    const bool both_children_done = right_child_done && left_child_done;
-    if (!both_children_done) {
+    if (!has_free_space() || !(right_child_done && left_child_done)) {
       return;
     }
 
@@ -382,7 +374,7 @@ class MultiwayMerger {
   using NodeIndex = size_t;
 
   // clang-format off
-  
+
   static constexpr NodeIndex ROOT = 1;
   static constexpr auto ONE_REMAINING = 1;
   static constexpr auto TWO_REMAINING = 2;

@@ -1,5 +1,10 @@
 #pragma once
 
+#include <memory>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
 #include "abstract_join_operator.hpp"
 #include "operator_join_predicate.hpp"
 #include "operators/join_simd_sort_merge/simd_utils.hpp"
