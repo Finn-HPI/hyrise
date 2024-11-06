@@ -6,6 +6,7 @@
 #include "operators/join_hash.hpp"
 #include "operators/join_index.hpp"
 #include "operators/join_nested_loop.hpp"
+#include "operators/join_simd_sort_merge.hpp"
 #include "operators/join_sort_merge.hpp"
 #include "operators/table_wrapper.hpp"
 #include "storage/chunk.hpp"
@@ -115,5 +116,9 @@ BENCHMARK_TEMPLATE(BM_Join_MediumAndMedium, JoinHash);
 BENCHMARK_TEMPLATE(BM_Join_SmallAndSmall, JoinSortMerge);
 BENCHMARK_TEMPLATE(BM_Join_SmallAndBig, JoinSortMerge);
 BENCHMARK_TEMPLATE(BM_Join_MediumAndMedium, JoinSortMerge);
+
+BENCHMARK_TEMPLATE(BM_Join_SmallAndSmall, JoinSimdSortMerge);
+BENCHMARK_TEMPLATE(BM_Join_SmallAndBig, JoinSimdSortMerge);
+BENCHMARK_TEMPLATE(BM_Join_MediumAndMedium, JoinSimdSortMerge);
 
 }  // namespace hyrise
