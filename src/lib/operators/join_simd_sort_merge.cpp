@@ -155,29 +155,6 @@ const std::string& JoinSimdSortMerge::name() const {
   return name;
 }
 
-template <typename T>
-void materialize_column_and_transform_to_simd_format(const std::shared_ptr<const Table> table, const ColumnID column_id,
-                                                     std::vector<MaterializedValue<T>>& materialized_values,
-                                                     SimdElementList& simd_element_list, RowIDPosList& null_values,
-                                                     const bool materialize_null) {
-  auto left_column_materializer = SMJColumnMaterializer<T>(JoinSimdSortMerge::JOB_SPAWN_THRESHOLD);
-  auto [materialized_segments, min_value, max_value, null_rows] =
-      left_column_materializer.materialize(table, column_id, materialize_null);
-  null_values = std::move(null_rows);
-
-  simd_element_list.reserve(materialized_segments.size());
-  auto index = size_t{0};
-  for (auto& segment : materialized_segments) {
-    for (auto& materialized_value : segment) {
-      DebugAssert(index <= std::numeric_limits<uint32_t>::max(), "Index has to fit into 32 bits. ");
-      const auto sorting_key = Data32BitCompression<T>::compress(materialized_value.value, min_value, max_value);
-      simd_element_list.emplace_back(static_cast<uint32_t>(index), sorting_key);
-      materialized_values.push_back(std::move(materialized_value));
-      ++index;
-    }
-  }
-}
-
 constexpr std::size_t choose_count_per_vector() {
 #if defined(__AVX512F__)
   return 8;
@@ -704,38 +681,65 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
     return merged_outputs;
   }
 
+  template <typename T, JoinSimdSortMerge::OperatorSteps materialize_step,
+            JoinSimdSortMerge::OperatorSteps transform_step>
+  void _materialize_column_and_transform_to_simd_format(const std::shared_ptr<const Table> table,
+                                                        const ColumnID column_id,
+                                                        std::vector<MaterializedValue<T>>& materialized_values,
+                                                        SimdElementList& simd_element_list, RowIDPosList& null_values,
+                                                        const bool materialize_null) {
+    auto timer = Timer{};
+    auto left_column_materializer = SMJColumnMaterializer<T>(JoinSimdSortMerge::JOB_SPAWN_THRESHOLD);
+    auto [materialized_segments, min_value, max_value, null_rows] =
+        left_column_materializer.materialize(table, column_id, materialize_null);
+    null_values = std::move(null_rows);
+
+    _performance.set_step_runtime(materialize_step, timer.lap());
+
+    simd_element_list.reserve(materialized_segments.size());
+    auto index = size_t{0};
+    for (auto& segment : materialized_segments) {
+      for (auto& materialized_value : segment) {
+        DebugAssert(index <= std::numeric_limits<uint32_t>::max(), "Index has to fit into 32 bits. ");
+        const auto sorting_key = Data32BitCompression<T>::compress(materialized_value.value, min_value, max_value);
+        simd_element_list.emplace_back(static_cast<uint32_t>(index), sorting_key);
+        materialized_values.push_back(std::move(materialized_value));
+        ++index;
+      }
+    }
+    _performance.set_step_runtime(transform_step, timer.lap());
+  }
+
  public:
   std::shared_ptr<const Table> _on_execute() override {
 #if HYRISE_DEBUG
     std::cout << "Execute JoinSimdSortMerge" << std::endl;
 #endif
-    using SortingType = double;
-    // using SortingType = int64_t;
 
     const auto include_null_left = (_mode == JoinMode::Left || _mode == JoinMode::FullOuter);
     const auto include_null_right = (_mode == JoinMode::Right || _mode == JoinMode::FullOuter);
 
-    auto timer = Timer{};
+    using enum OperatorSteps;
 
-    materialize_column_and_transform_to_simd_format<ColumnType>(_left_input_table, _primary_left_column_id,
-                                                                _materialized_values_left, _simd_elements_left,
-                                                                _null_rows_left, include_null_left);
-    _performance.set_step_runtime(OperatorSteps::LeftSideMaterializingAndTransform, timer.lap());
+    _materialize_column_and_transform_to_simd_format<ColumnType, LeftSideMaterialize, LeftSideTransform>(
+        _left_input_table, _primary_left_column_id, _materialized_values_left, _simd_elements_left, _null_rows_left,
+        include_null_left);
 
-    materialize_column_and_transform_to_simd_format<ColumnType>(_right_input_table, _primary_right_column_id,
-                                                                _materialized_values_right, _simd_elements_right,
-                                                                _null_rows_right, include_null_right);
-    _performance.set_step_runtime(OperatorSteps::RightSideMaterializingAndTransform, timer.lap());
+    _materialize_column_and_transform_to_simd_format<ColumnType, RightSideMaterialize, RightSideTransform>(
+        _right_input_table, _primary_right_column_id, _materialized_values_right, _simd_elements_right,
+        _null_rows_right, include_null_right);
 
     _sorted_per_hash_left = std::move(
-        _sort_relation<SortingType, OperatorSteps::LeftSidePartitionAndSort, OperatorSteps::LeftSideMultiwayMerging>(
-            _simd_elements_left));
+        _sort_relation<SortingType, LeftSidePartitionAndSortBuckets, LeftSideMultiwayMerging>(_simd_elements_left));
 
     _sorted_per_hash_right = std::move(
-        _sort_relation<SortingType, OperatorSteps::RightSidePartitionAndSort, OperatorSteps::RightSideMultiwayMerging>(
-            _simd_elements_right));
+        _sort_relation<SortingType, RightSidePartitionAndSortBuckets, RightSideMultiwayMerging>(_simd_elements_right));
+
+    auto timer = Timer{};
 
     _perform_join();
+
+    _performance.set_step_runtime(FindJoinPartner, timer.lap());
 
     if (include_null_left || include_null_right) {
       auto null_output_left = RowIDPosList();
@@ -759,7 +763,7 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
       }
     }
 
-    _performance.set_step_runtime(OperatorSteps::FindJoinPartner, timer.lap());
+    // _performance.set_step_runtime(OperatorSteps::FindJoinPartner, timer.lap());
 
     const auto create_left_side_pos_lists_by_segment = (_left_input_table->type() == TableType::References);
     const auto create_right_side_pos_lists_by_segment = (_right_input_table->type() == TableType::References);

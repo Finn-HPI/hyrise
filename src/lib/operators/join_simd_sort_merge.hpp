@@ -25,11 +25,13 @@ class JoinSimdSortMerge : public AbstractJoinOperator {
   const std::string& name() const override;
 
   enum class OperatorSteps : uint8_t {
-    LeftSideMaterializingAndTransform,
-    RightSideMaterializingAndTransform,
-    LeftSidePartitionAndSort,
+    LeftSideMaterialize,
+    LeftSideTransform,
+    RightSideMaterialize,
+    RightSideTransform,
+    LeftSidePartitionAndSortBuckets,
+    RightSidePartitionAndSortBuckets,
     LeftSideMultiwayMerging,
-    RightSidePartitionAndSort,
     RightSideMultiwayMerging,
     FindJoinPartner,
     OutputWriting
@@ -38,6 +40,9 @@ class JoinSimdSortMerge : public AbstractJoinOperator {
   static constexpr auto JOB_SPAWN_THRESHOLD = 500;
 
  protected:
+  // Datatype used for simd sorting (has to be 64 bits).
+  using SortingType = double;
+
   std::shared_ptr<const Table> _on_execute() override;
   void _on_cleanup() override;
   std::shared_ptr<AbstractOperator> _on_deep_copy(
