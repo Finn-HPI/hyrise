@@ -26,11 +26,13 @@ class JoinSimdSortMerge : public AbstractJoinOperator {
 
   enum class OperatorSteps : uint8_t {
     LeftSideMaterialize,
-    LeftSideTransform,
     RightSideMaterialize,
+    LeftSideTransform,
     RightSideTransform,
-    LeftSidePartitionAndSortBuckets,
-    RightSidePartitionAndSortBuckets,
+    LeftSideConstructPartitions,
+    RightSideConstructPartitions,
+    LeftSideSortPartitions,
+    RightSideSortPartitions,
     LeftSideMultiwayMerging,
     RightSideMultiwayMerging,
     FindJoinPartner,

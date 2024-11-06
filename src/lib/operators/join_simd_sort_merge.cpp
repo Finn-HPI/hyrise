@@ -187,6 +187,33 @@ RadixPartition<ColumnType> construct_and_sort_partitions(std::span<SimdElement> 
   return radix_partitioner;
 }
 
+template <typename ColumnType>
+RadixPartition<ColumnType> construct_partitions(std::span<SimdElement> elements) {
+  auto radix_partitioner = RadixPartition<ColumnType>(elements);
+  radix_partitioner.execute();
+
+  return radix_partitioner;
+}
+
+template <typename SimdSortType, typename ColumnType>
+void sort_partition(RadixPartition<ColumnType>& radix_partition) {
+  const auto num_partitions = radix_partition.num_partitions();
+  for (auto partition_index = std::size_t{0}; partition_index < num_partitions; ++partition_index) {
+    auto& bucket = radix_partition.bucket(partition_index);
+    if (!bucket.size) {
+      continue;
+    }
+    const auto count_per_vector = choose_count_per_vector();
+    auto* input_pointer = bucket.template begin<SimdSortType>();
+    auto* output_pointer = radix_partition.template get_working_memory<SimdSortType>(partition_index);
+    DebugAssert((simd_sort::is_simd_aligned<SimdSortType, 64>(input_pointer)), "Input not cache aligned.");
+    DebugAssert((simd_sort::is_simd_aligned<SimdSortType, 64>(output_pointer)), "Output not cache aligned.");
+
+    simd_sort::sort<count_per_vector>(input_pointer, output_pointer, bucket.size);
+    bucket.data = reinterpret_cast<SimdElement*>(output_pointer);
+  }
+}
+
 template <typename SortingType, typename RadixPartition>
 simd_sort::simd_vector<SimdElement> merge_sorted_buckets(PerThread<RadixPartition>& partitions,
                                                          std::size_t bucket_index) {
@@ -200,7 +227,7 @@ simd_sort::simd_vector<SimdElement> merge_sorted_buckets(PerThread<RadixPartitio
   }
 
   auto multiway_merger = multiway_merging::MultiwayMerger<choose_count_per_vector(), SortingType>(sorted_buckets);
-  return std::move(multiway_merger.merge());
+  return multiway_merger.merge();
 }
 
 // template <typename SortingType, typename RadixPartition>
@@ -632,8 +659,8 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
     });
   }
 
-  template <typename SortingType, JoinSimdSortMerge::OperatorSteps partition_and_sort_step,
-            JoinSimdSortMerge::OperatorSteps multiway_merge_step>
+  template <typename SortingType, OperatorSteps partition_step, OperatorSteps sort_buckets_step,
+            OperatorSteps multiway_merge_step>
   PerHash<simd_sort::simd_vector<SimdElement>> _sort_relation(SimdElementList& simd_elements) {
     auto timer = Timer{};
 
@@ -655,10 +682,16 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
     }
 
     spawn_and_wait_per_thread(thread_inputs, [&thread_partitions](auto& elements, std::size_t thread_index) {
-      thread_partitions[thread_index] = construct_and_sort_partitions<SortingType, ColumnType>(elements);
+      thread_partitions[thread_index] = std::move(construct_partitions<ColumnType>(elements));
     });
 
-    _performance.set_step_runtime(partition_and_sort_step, timer.lap());
+    _performance.set_step_runtime(partition_step, timer.lap());
+
+    spawn_and_wait_per_thread(thread_partitions, [](auto& partition) {
+      sort_partition<SortingType, ColumnType>(partition);
+    });
+
+    _performance.set_step_runtime(sort_buckets_step, timer.lap());
 
 #if HYRISE_DEBUG
     for (auto thread_index = 0u; thread_index < THREAD_COUNT; ++thread_index) {
@@ -673,7 +706,7 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
 
     auto merged_outputs = PerHash<simd_sort::simd_vector<SimdElement>>{};
     spawn_and_wait_per_hash(merged_outputs, [&thread_partitions](auto& merged_output, std::size_t bucket_index) {
-      merged_output = merge_sorted_buckets<SortingType>(thread_partitions, bucket_index);
+      merged_output = std::move(merge_sorted_buckets<SortingType>(thread_partitions, bucket_index));
     });
 
     _performance.set_step_runtime(multiway_merge_step, timer.lap());
@@ -730,16 +763,16 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
         _null_rows_right, include_null_right);
 
     _sorted_per_hash_left = std::move(
-        _sort_relation<SortingType, LeftSidePartitionAndSortBuckets, LeftSideMultiwayMerging>(_simd_elements_left));
+        _sort_relation<SortingType, LeftSideConstructPartitions, LeftSideSortPartitions, LeftSideMultiwayMerging>(
+            _simd_elements_left));
 
     _sorted_per_hash_right = std::move(
-        _sort_relation<SortingType, RightSidePartitionAndSortBuckets, RightSideMultiwayMerging>(_simd_elements_right));
+        _sort_relation<SortingType, RightSideConstructPartitions, RightSideSortPartitions, RightSideMultiwayMerging>(
+            _simd_elements_right));
 
     auto timer = Timer{};
 
     _perform_join();
-
-    _performance.set_step_runtime(FindJoinPartner, timer.lap());
 
     if (include_null_left || include_null_right) {
       auto null_output_left = RowIDPosList();
@@ -763,7 +796,7 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
       }
     }
 
-    // _performance.set_step_runtime(OperatorSteps::FindJoinPartner, timer.lap());
+    _performance.set_step_runtime(FindJoinPartner, timer.lap());
 
     const auto create_left_side_pos_lists_by_segment = (_left_input_table->type() == TableType::References);
     const auto create_right_side_pos_lists_by_segment = (_right_input_table->type() == TableType::References);
