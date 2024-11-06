@@ -706,10 +706,12 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
 
  public:
   std::shared_ptr<const Table> _on_execute() override {
+#if HYRISE_DEBUG
+    std::cout << "Execute JoinSimdSortMerge" << std::endl;
+#endif
     using SortingType = double;
     // using SortingType = int64_t;
 
-    std::cout << "Run JoinSimdSortMerg execute!!!" << std::endl;
     const auto include_null_left = (_mode == JoinMode::Left || _mode == JoinMode::FullOuter);
     const auto include_null_right = (_mode == JoinMode::Right || _mode == JoinMode::FullOuter);
 
