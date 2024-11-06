@@ -293,7 +293,7 @@ class MultiwayMerger {
   template <typename Output>
   bool _merge_other_if_one_done(Output& output, CircularBuffer& left, CircularBuffer& right, bool left_child_done,
                                 bool right_child_done) {
-    constexpr auto WRITE_TO_NODE_BUFFER = std::is_same_v<Output, CircularBuffer>;
+    [[maybe_unused]] constexpr auto WRITE_TO_NODE_BUFFER = std::is_same_v<Output, CircularBuffer>;
     if (right_child_done && right.empty()) {
       if (!left_child_done && !left.empty()) {
         _write_to_destination(output, left);
