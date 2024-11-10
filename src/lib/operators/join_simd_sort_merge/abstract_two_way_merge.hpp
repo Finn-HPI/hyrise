@@ -14,7 +14,19 @@ class AbstractTwoWayMerge {
   static constexpr auto VECTOR_SIZE = count_per_vector * sizeof(T);
   using VecType = Vec<VECTOR_SIZE, T>;
 
+  // NOLINTBEGIN(cppcoreguidelines-pro-type-vararg, hicpp-vararg)
  public:
+  static inline void __attribute__((always_inline)) merge_2x_base_size(VecType& in11, VecType& in12, VecType& in21,
+                                                                       VecType& in22, VecType& out1, VecType& out2,
+                                                                       VecType& out3, VecType& out4) {
+    auto l11 = __builtin_elementwise_min(in11, in21);
+    auto l12 = __builtin_elementwise_min(in12, in22);
+    auto h11 = __builtin_elementwise_max(in11, in21);
+    auto h12 = __builtin_elementwise_max(in12, in22);
+    Derived::merge_base_size(l11, l12, out1, out2);
+    Derived::merge_base_size(h11, h12, out3, out4);
+  }
+
   template <std::size_t input_count, typename MulitVecType>
   struct BitonicMergeNetwork {
     static inline void __attribute__((always_inline)) merge(MulitVecType& /*in1*/, MulitVecType& /*in2*/,
@@ -28,11 +40,9 @@ class AbstractTwoWayMerge {
     static inline void __attribute__((always_inline)) merge(MultiVecType& in1, MultiVecType& in2, MultiVecType& out1,
                                                             MultiVecType& out2) {
       Derived::reverse(in2.a);
-      Derived::merge_network_input_x2(in1.a, in2.a, out1.a, out2.a);
+      Derived::merge_base_size(in1.a, in2.a, out1.a, out2.a);
     }
   };
-
-  // NOLINTBEGIN(cppcoreguidelines-pro-type-vararg, hicpp-vararg)
 
   template <typename MultiVecType>
   struct BitonicMergeNetwork<MERGE_2AB, MultiVecType> {
@@ -44,8 +54,8 @@ class AbstractTwoWayMerge {
       auto l12 = __builtin_elementwise_min(in1.b, in2.a);
       auto h11 = __builtin_elementwise_max(in1.a, in2.b);
       auto h12 = __builtin_elementwise_max(in1.b, in2.a);
-      Derived::merge_network_input_x2(l11, l12, out1.a, out1.b);
-      Derived::merge_network_input_x2(h11, h12, out2.a, out2.b);
+      Derived::merge_base_size(l11, l12, out1.a, out1.b);
+      Derived::merge_base_size(h11, h12, out2.a, out2.b);
     }
   };
 
@@ -65,8 +75,8 @@ class AbstractTwoWayMerge {
       auto h02 = __builtin_elementwise_max(in1.b, in2.c);
       auto h03 = __builtin_elementwise_max(in1.c, in2.b);
       auto h04 = __builtin_elementwise_max(in1.d, in2.a);
-      Derived::merge_network_input_x4(l01, l02, l03, l04, out1.a, out1.b, out1.c, out1.d);
-      Derived::merge_network_input_x4(h01, h02, h03, h04, out2.a, out2.b, out2.c, out2.d);
+      merge_2x_base_size(l01, l02, l03, l04, out1.a, out1.b, out1.c, out1.d);
+      merge_2x_base_size(h01, h02, h03, h04, out2.a, out2.b, out2.c, out2.d);
     }
   };
 

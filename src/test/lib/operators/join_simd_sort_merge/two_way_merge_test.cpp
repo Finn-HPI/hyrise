@@ -72,7 +72,7 @@ TYPED_TEST(SimdTwoWayMergeTest, MergeNetwokInputSize2) {
     auto merge_output = MultiVec{};
     input_ab.load(data.data());
 
-    two_way_merge.merge_network_input_x2(input_ab.a, input_ab.b, merge_output.a, merge_output.b);
+    two_way_merge.merge_base_size(input_ab.a, input_ab.b, merge_output.a, merge_output.b);
 
     auto output = simd_vector<TypeParam>(data.size());
     merge_output.store(output.data());
@@ -121,8 +121,8 @@ TYPED_TEST(SimdTwoWayMergeTest, MergeNetwokInputSize4) {
     auto merge_output = MultiVec{};
     input_ab.load(data.data());
 
-    two_way_merge.merge_network_input_x4(input_ab.a, input_ab.b, input_ab.c, input_ab.d, merge_output.a, merge_output.b,
-                                         merge_output.c, merge_output.d);
+    two_way_merge.merge_2x_base_size(input_ab.a, input_ab.b, input_ab.c, input_ab.d, merge_output.a, merge_output.b,
+                                     merge_output.c, merge_output.d);
 
     auto output = simd_vector<TypeParam>(data.size());
     merge_output.store(output.data());
