@@ -140,7 +140,7 @@ TYPED_TEST(SimdSortTest, SortComplete) {
     test_sort.template operator()<2>(static_cast<double>(scale));
     test_sort.template operator()<4>(static_cast<double>(scale));
 #ifdef __AVX512F__
-    test_sort_block.template operator()<8>(static_cast<double>(scale));
+    test_sort.template operator()<8>(static_cast<double>(scale));
 #endif
     // Test with fractional multiples of BlOCK_SIZE.
     constexpr auto BASE_FACTOR = double{1} / static_cast<double>(NUM_FRACTIONS);

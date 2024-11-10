@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cstddef>
 #include <cstring>
 #include <utility>
 #include <vector>
@@ -30,6 +31,7 @@ constexpr std::size_t block_size() {
 }
 
 template <std::size_t reg_size, typename T>
+  requires(reg_size % sizeof(T) == 0)
 using Vec __attribute__((vector_size(reg_size))) = T;
 
 // Loading and Storing SIMD vectors.

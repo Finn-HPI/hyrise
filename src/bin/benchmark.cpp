@@ -124,7 +124,7 @@ void benchmark(const std::size_t scale, const std::size_t num_warumup_runs, cons
 
     std::cout << "start simd_sort" << std::endl;
 
-    for (volatile auto& elem : data_std_sort) {
+    for (volatile auto& elem : data_simd_sort) {
       (void)elem;  // Prevents unused variable warning
                    // Access element to bring it into cache
     }
