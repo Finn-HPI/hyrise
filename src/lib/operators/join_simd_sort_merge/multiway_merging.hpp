@@ -20,6 +20,8 @@ class MultiwayMerger {
   using TwoWayMerge = simd_sort::TwoWayMerge<count_per_vector, T>;
 
  public:
+  using value_type = T;
+
   explicit MultiwayMerger(std::vector<std::unique_ptr<Bucket>>& sorted_buckets)
       : _leaf_count(std::bit_ceil(sorted_buckets.size())),
         _sorted_buckets(std::move(sorted_buckets)),

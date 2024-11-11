@@ -5,9 +5,11 @@
 #include <boost/unordered/unordered_flat_set.hpp>
 
 #include "operators/join_helper/join_output_writing.hpp"
+#include "operators/join_simd_sort_merge/k_way_merge.hpp"
 #include "operators/join_simd_sort_merge/multiway_merging.hpp"
 #include "operators/join_simd_sort_merge/radix_partitioning.hpp"
 #include "operators/join_simd_sort_merge/simd_sort.hpp"
+#include "operators/join_sort_merge/column_materializer.hpp"
 #include "operators/multi_predicate_join/multi_predicate_join_evaluator.hpp"
 #include "utils/timer.hpp"
 
@@ -21,7 +23,7 @@
 #include <span>
 #include <utility>
 
-#include "operators/join_simd_sort_merge/column_materializer.hpp"
+// #include "operators/join_simd_sort_merge/column_materializer.hpp"
 #include "types.hpp"
 #include "utils/assert.hpp"
 
@@ -163,57 +165,6 @@ constexpr std::size_t choose_count_per_vector() {
 #endif
 }
 
-template <typename SimdSortType, typename ColumnType>
-RadixPartition<ColumnType> construct_and_sort_partitions(std::span<SimdElement> elements) {
-  auto radix_partitioner = RadixPartition<ColumnType>(elements);
-  radix_partitioner.execute();
-
-  const auto num_partitions = RadixPartition<ColumnType>::num_partitions();
-  for (auto partition_index = std::size_t{0}; partition_index < num_partitions; ++partition_index) {
-    auto& bucket = radix_partitioner.bucket(partition_index);
-    if (!bucket.size) {
-      continue;
-    }
-    const auto count_per_vector = choose_count_per_vector();
-    auto* input_pointer = bucket.template begin<SimdSortType>();
-    auto* output_pointer = radix_partitioner.template get_working_memory<SimdSortType>(partition_index);
-    DebugAssert((simd_sort::is_simd_aligned<SimdSortType, 64>(input_pointer)), "Input not cache aligned.");
-    DebugAssert((simd_sort::is_simd_aligned<SimdSortType, 64>(output_pointer)), "Output not cache aligned.");
-
-    simd_sort::sort<count_per_vector>(input_pointer, output_pointer, bucket.size);
-    bucket.data = reinterpret_cast<SimdElement*>(output_pointer);
-  }
-
-  return radix_partitioner;
-}
-
-template <typename ColumnType>
-RadixPartition<ColumnType> construct_partitions(std::span<SimdElement> elements) {
-  auto radix_partitioner = RadixPartition<ColumnType>(elements);
-  radix_partitioner.execute();
-
-  return radix_partitioner;
-}
-
-template <typename SimdSortType, typename ColumnType>
-void sort_partition(RadixPartition<ColumnType>& radix_partition) {
-  const auto num_partitions = radix_partition.num_partitions();
-  for (auto partition_index = std::size_t{0}; partition_index < num_partitions; ++partition_index) {
-    auto& bucket = radix_partition.bucket(partition_index);
-    if (!bucket.size) {
-      continue;
-    }
-    const auto count_per_vector = choose_count_per_vector();
-    auto* input_pointer = bucket.template begin<SimdSortType>();
-    auto* output_pointer = radix_partition.template get_working_memory<SimdSortType>(partition_index);
-    DebugAssert((simd_sort::is_simd_aligned<SimdSortType, 64>(input_pointer)), "Input not cache aligned.");
-    DebugAssert((simd_sort::is_simd_aligned<SimdSortType, 64>(output_pointer)), "Output not cache aligned.");
-
-    simd_sort::sort<count_per_vector>(input_pointer, output_pointer, bucket.size);
-    bucket.data = reinterpret_cast<SimdElement*>(output_pointer);
-  }
-}
-
 template <typename SortingType, typename RadixPartition>
 simd_sort::simd_vector<SimdElement> merge_sorted_buckets(PerThread<RadixPartition>& partitions,
                                                          std::size_t bucket_index) {
@@ -226,8 +177,10 @@ simd_sort::simd_vector<SimdElement> merge_sorted_buckets(PerThread<RadixPartitio
     sorted_buckets.push_back(std::make_unique<Bucket>(bucket));
   }
 
-  auto multiway_merger = multiway_merging::MultiwayMerger<choose_count_per_vector(), SortingType>(sorted_buckets);
-  return multiway_merger.merge();
+  // auto multiway_merger = multiway_merging::MultiwayMerger<choose_count_per_vector(), SortingType>(sorted_buckets);
+  // return multiway_merger.merge();
+  auto k_way_merger = k_way_merge::KWayMerge<SortingType>(sorted_buckets);
+  return k_way_merger.merge();
 }
 
 // template <typename SortingType, typename RadixPartition>
@@ -273,9 +226,10 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
         _primary_right_column_id{right_column_id},
         _primary_predicate_condition{op},
         _mode{mode},
+        _cluster_count(_determine_number_of_clusters()),
         _secondary_join_predicates{secondary_join_predicates} {
-    _output_pos_lists_left.resize(radix_partition::PARTITION_SIZE);
-    _output_pos_lists_right.resize(radix_partition::PARTITION_SIZE);
+    _output_pos_lists_left.resize(_cluster_count);
+    _output_pos_lists_right.resize(_cluster_count);
   }
 
  protected:
@@ -292,6 +246,8 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
   const PredicateCondition _primary_predicate_condition;
   const JoinMode _mode;
 
+  size_t _cluster_count;
+
   std::vector<MaterializedValue<ColumnType>> _materialized_values_left;
   std::vector<MaterializedValue<ColumnType>> _materialized_values_right;
 
@@ -302,8 +258,14 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
   SimdElementList _simd_elements_left;
   SimdElementList _simd_elements_right;
 
-  PerHash<simd_sort::simd_vector<SimdElement>> _sorted_per_hash_left;
-  PerHash<simd_sort::simd_vector<SimdElement>> _sorted_per_hash_right;
+  SimdElementList _partition_storage_left;
+  SimdElementList _partition_storage_right;
+
+  SimdElementList _working_memory_left;
+  SimdElementList _working_memory_right;
+
+  std::vector<std::span<SimdElement>> _sorted_per_hash_left;
+  std::vector<std::span<SimdElement>> _sorted_per_hash_right;
 
   const std::vector<OperatorJoinPredicate>& _secondary_join_predicates;
 
@@ -325,6 +287,22 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
   };
 
   using RowHashSet = boost::unordered_flat_set<RowID, RowHasher>;
+
+  // Determines the number of clusters to be used for the join. The number of clusters must be a power of two.
+  size_t _determine_number_of_clusters() {
+    // We try to have a partition size of roughly 256 KB to limit out-of-cache sorting and increase parallelism. This
+    // value has been determined by an array of benchmarks and should be revisited for larger changes to the operator.
+    // Ideally, it would incorporate hardware knowledge such as the actual L2 cache size of the current system.
+    constexpr auto MAX_SORT_ITEMS_COUNT = 4'194'304;
+    const size_t cluster_count_left = _sort_merge_join.left_input_table()->row_count() / MAX_SORT_ITEMS_COUNT;
+    const size_t cluster_count_right = _sort_merge_join.right_input_table()->row_count() / MAX_SORT_ITEMS_COUNT;
+
+    // Return the next smaller power of two for the larger of the two cluster counts. Do not use more than 2^8 clusters
+    // as TLB misses during clustering become too expensive (see "An Experimental Comparison of Thirteen Relational
+    // Equi-Joins in Main Memory" by Schuh et al.).
+    return static_cast<size_t>(std::pow(
+        2, std::min(8.0, std::floor(std::log2(std::max({size_t{1}, cluster_count_left, cluster_count_right}))))));
+  }
 
   struct PotentialMatchRange {
     PotentialMatchRange(std::size_t init_start_index, std::size_t init_end_index, std::span<SimdElement> init_elements)
@@ -363,7 +341,7 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
     }
   };
 
-  std::size_t _equal_value_range_size(std::size_t start_index, simd_sort::simd_vector<SimdElement>& elements) {
+  std::size_t _equal_value_range_size(std::size_t start_index, std::span<SimdElement>& elements) {
     if (start_index >= elements.size()) {
       return 0;
     }
@@ -589,8 +567,8 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
   }
 
   // Currently we only support Inner, Equi-Joins.
-  void _join_per_hash(std::size_t bucket_index, simd_sort::simd_vector<SimdElement>& left_elements,
-                      simd_sort::simd_vector<SimdElement>& right_elements) {
+  void _join_per_hash(std::size_t bucket_index, std::span<SimdElement>& left_elements,
+                      std::span<SimdElement>& right_elements) {
     auto multi_predicate_join_evaluator = std::optional<MultiPredicateJoinEvaluator>{};
     if (!_secondary_join_predicates.empty()) {
       multi_predicate_join_evaluator.emplace(*_sort_merge_join._left_input->get_output(),
@@ -654,64 +632,75 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
   }
 
   void _perform_join() {
-    spawn_and_wait_per_hash([this](std::size_t bucket_index) {
-      _join_per_hash(bucket_index, _sorted_per_hash_left[bucket_index], _sorted_per_hash_right[bucket_index]);
-    });
+    auto jobs = std::vector<std::shared_ptr<AbstractTask>>{};
+    for (auto cluster_index = size_t{0}; cluster_index < _cluster_count; ++cluster_index) {
+      const auto merge_row_count =
+          _sorted_per_hash_left[cluster_index].size() + _sorted_per_hash_right[cluster_index].size();
+      if (merge_row_count > JOB_SPAWN_THRESHOLD) {
+        jobs.push_back(std::make_shared<JobTask>([cluster_index, this]() {
+          _join_per_hash(cluster_index, _sorted_per_hash_left[cluster_index], _sorted_per_hash_right[cluster_index]);
+        }));
+      } else {
+        _join_per_hash(cluster_index, _sorted_per_hash_left[cluster_index], _sorted_per_hash_right[cluster_index]);
+      }
+    }
+    Hyrise::get().scheduler()->schedule_and_wait_for_tasks(jobs);
   }
 
-  template <typename SortingType, OperatorSteps partition_step, OperatorSteps sort_buckets_step,
-            OperatorSteps multiway_merge_step>
-  PerHash<simd_sort::simd_vector<SimdElement>> _sort_relation(SimdElementList& simd_elements) {
+  template <typename SortingType, OperatorSteps partition_step, OperatorSteps sort_buckets_step>
+  std::vector<std::span<SimdElement>> _sort_relation(SimdElementList& simd_elements, SimdElementList& partition_storage,
+                                                     SimdElementList& working_memory) {
     auto timer = Timer{};
 
-    const auto num_items = simd_elements.size();
-    const auto base_size_per_thread = num_items / THREAD_COUNT;
-    const auto remainder = num_items % THREAD_COUNT;
-
-    using RadixPartition = RadixPartition<ColumnType>;
-
-    auto thread_partitions = PerThread<RadixPartition>{};
-    auto thread_inputs = PerThread<std::span<SimdElement>>{};
-
-    // Split simd_elements into THREAD_COUNT many sections.
-    auto* input_start_address = simd_elements.data();
-    for (auto thread_index = std::size_t{0}, offset = std::size_t{0}; thread_index < THREAD_COUNT; ++thread_index) {
-      auto current_range_size = base_size_per_thread + (thread_index < remainder ? 1 : 0);
-      thread_inputs[thread_index] = {input_start_address + offset, input_start_address + offset + current_range_size};
-      offset += current_range_size;
-    }
-
-    spawn_and_wait_per_thread(thread_inputs, [&thread_partitions](auto& elements, std::size_t thread_index) {
-      thread_partitions[thread_index] = std::move(construct_partitions<ColumnType>(elements));
-    });
+    auto radix_partition = RadixPartition<ColumnType>(simd_elements, _cluster_count);
+    radix_partition.execute(partition_storage, working_memory);
 
     _performance.set_step_runtime(partition_step, timer.lap());
 
-    spawn_and_wait_per_thread(thread_partitions, [](auto& partition) {
-      sort_partition<SortingType, ColumnType>(partition);
-    });
+    auto sort_bucket = [&radix_partition, &working_memory](size_t bucket_index) {
+      auto& bucket = radix_partition.bucket(bucket_index);
+      if (!bucket.size) {
+        return;
+      }
+      const auto count_per_vector = choose_count_per_vector();
+      auto* input_pointer = bucket.template begin<SortingType>();
+      auto* output_pointer = radix_partition.template get_working_memory<SortingType>(bucket_index, working_memory);
+
+      DebugAssert((simd_sort::is_simd_aligned<SortingType, 64>(input_pointer)), "Input not cache aligned.");
+      DebugAssert((simd_sort::is_simd_aligned<SortingType, 64>(output_pointer)), "Output not cache aligned.");
+
+      simd_sort::sort<count_per_vector>(input_pointer, output_pointer, bucket.size);
+      bucket.data = reinterpret_cast<SimdElement*>(output_pointer);
+    };
+
+    auto jobs = std::vector<std::shared_ptr<AbstractTask>>{};
+    for (auto bucket_index = size_t{0}; bucket_index < _cluster_count; ++bucket_index) {
+      auto& bucket = radix_partition.bucket(bucket_index);
+      if (bucket.size > JOB_SPAWN_THRESHOLD) {
+        jobs.push_back(std::make_shared<JobTask>([&sort_bucket, bucket_index]() {
+          sort_bucket(bucket_index);
+        }));
+      } else {
+        sort_bucket(bucket_index);
+      }
+    }
+
+    Hyrise::get().scheduler()->schedule_and_wait_for_tasks(jobs);
+
+    auto sorted_clusters = std::vector<std::span<SimdElement>>{};
+    sorted_clusters.reserve(_cluster_count);
+
+    for (auto bucket : radix_partition.buckets()) {
+      // Check that each bucket is sorted according to SortingType and the key of the SimdElement;
+      DebugAssert(std::is_sorted(bucket.template begin<SortingType>(), bucket.template end<SortingType>()),
+                  "Partition was not sorted correctly.");
+
+      sorted_clusters.push_back(std::span(bucket.template begin<SimdElement>(), bucket.template end<SimdElement>()));
+    }
 
     _performance.set_step_runtime(sort_buckets_step, timer.lap());
 
-#if HYRISE_DEBUG
-    for (auto thread_index = 0u; thread_index < THREAD_COUNT; ++thread_index) {
-      const auto& buckets = thread_partitions[thread_index].buckets();
-      for (auto bucket : buckets) {
-        // Check that each bucket is sorted according to SortingType and the key of the SimdElement;
-        DebugAssert(std::is_sorted(bucket.template begin<SortingType>(), bucket.template end<SortingType>()),
-                    "Partition was not sorted correctly.");
-      }
-    }
-#endif
-
-    auto merged_outputs = PerHash<simd_sort::simd_vector<SimdElement>>{};
-    spawn_and_wait_per_hash(merged_outputs, [&thread_partitions](auto& merged_output, std::size_t bucket_index) {
-      merged_output = std::move(merge_sorted_buckets<SortingType>(thread_partitions, bucket_index));
-    });
-
-    _performance.set_step_runtime(multiway_merge_step, timer.lap());
-
-    return merged_outputs;
+    return sorted_clusters;
   }
 
   template <typename T, JoinSimdSortMerge::OperatorSteps materialize_step,
@@ -722,14 +711,21 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
                                                         SimdElementList& simd_element_list, RowIDPosList& null_values,
                                                         const bool materialize_null) {
     auto timer = Timer{};
-    auto left_column_materializer = SMJColumnMaterializer<T>(JoinSimdSortMerge::JOB_SPAWN_THRESHOLD);
-    auto [materialized_segments, min_value, max_value, null_rows] =
-        left_column_materializer.materialize(table, column_id, materialize_null);
+    auto left_column_materializer = ColumnMaterializer<T>(false, materialize_null);
+    auto [materialized_segments, null_rows, samples] = left_column_materializer.materialize(table, column_id);
+
+    // auto left_column_materializer = SMJColumnMaterializer<T>(JoinSimdSortMerge::JOB_SPAWN_THRESHOLD);
+    // auto [materialized_segments, min_value, max_value, null_rows] =
+    //     left_column_materializer.materialize(table, column_id, materialize_null);
     null_values = std::move(null_rows);
 
     _performance.set_step_runtime(materialize_step, timer.lap());
 
     simd_element_list.reserve(materialized_segments.size());
+
+    auto min_value = std::numeric_limits<T>::lowest();
+    auto max_value = std::numeric_limits<T>::max();
+
     auto index = size_t{0};
     for (auto& segment : materialized_segments) {
       for (auto& materialized_value : segment) {
@@ -746,7 +742,7 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
  public:
   std::shared_ptr<const Table> _on_execute() override {
 #if HYRISE_DEBUG
-    std::cout << "Execute JoinSimdSortMerge" << std::endl;
+    std::cout << "Execute JoinSimdSortMerge: cluster_count: " << _cluster_count << std::endl;
 #endif
 
     const auto include_null_left = (_mode == JoinMode::Left || _mode == JoinMode::FullOuter);
@@ -762,13 +758,11 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
         _right_input_table, _primary_right_column_id, _materialized_values_right, _simd_elements_right,
         _null_rows_right, include_null_right);
 
-    _sorted_per_hash_left = std::move(
-        _sort_relation<SortingType, LeftSideConstructPartitions, LeftSideSortPartitions, LeftSideMultiwayMerging>(
-            _simd_elements_left));
+    _sorted_per_hash_left = std::move(_sort_relation<SortingType, LeftSidePartition, LeftSideSortBuckets>(
+        _simd_elements_left, _partition_storage_left, _working_memory_left));
 
-    _sorted_per_hash_right = std::move(
-        _sort_relation<SortingType, RightSideConstructPartitions, RightSideSortPartitions, RightSideMultiwayMerging>(
-            _simd_elements_right));
+    _sorted_per_hash_right = std::move(_sort_relation<SortingType, RightSidePartition, RightSideSortBuckets>(
+        _simd_elements_right, _partition_storage_right, _working_memory_right));
 
     auto timer = Timer{};
 

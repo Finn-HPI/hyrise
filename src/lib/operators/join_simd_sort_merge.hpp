@@ -29,12 +29,12 @@ class JoinSimdSortMerge : public AbstractJoinOperator {
     RightSideMaterialize,
     LeftSideTransform,
     RightSideTransform,
-    LeftSideConstructPartitions,
-    RightSideConstructPartitions,
-    LeftSideSortPartitions,
-    RightSideSortPartitions,
-    LeftSideMultiwayMerging,
-    RightSideMultiwayMerging,
+    LeftSidePartition,
+    RightSidePartition,
+    LeftSideSortBuckets,
+    RightSideSortBuckets,
+    // LeftSideMultiwayMerging,
+    // RightSideMultiwayMerging,
     FindJoinPartner,
     OutputWriting
   };

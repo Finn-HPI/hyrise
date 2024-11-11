@@ -14,7 +14,7 @@ namespace radix_partition {
 
 constexpr auto RADIX_BITS = uint8_t{8};
 constexpr auto HASH_MASK = std::size_t{(1u << RADIX_BITS) - 1};
-constexpr auto PARTITION_SIZE = uint32_t{1u << RADIX_BITS};
+// constexpr auto PARTITION_SIZE = uint32_t{1u << RADIX_BITS};
 constexpr auto CACHE_LINE_SIZE = std::size_t{64};
 constexpr auto TUPLES_PER_CACHELINE = CACHE_LINE_SIZE / 8;
 
@@ -39,8 +39,8 @@ struct SimdElement {
 template <typename T>
 using PerThread = std::array<T, THREAD_COUNT>;
 
-template <typename T>
-using PerHash = std::array<T, radix_partition::PARTITION_SIZE>;
+// template <typename T>
+// using PerHash = std::array<T, radix_partition::PARTITION_SIZE>;
 
 template <typename T>
 void spawn_and_wait_per_thread(PerThread<T>& data, auto&& per_thread_function) {
@@ -60,10 +60,10 @@ void spawn_and_wait_per_thread(PerThread<T>& data, auto&& per_thread_function) {
 }
 
 template <typename T>
-void spawn_and_wait_per_hash(PerHash<T>& data, auto&& per_hash_function) {
+void spawn_and_wait_per_hash(std::vector<T>& data, const size_t partition_size, auto&& per_hash_function) {
   auto tasks = std::vector<std::shared_ptr<AbstractTask>>{};
-  tasks.reserve(radix_partition::PARTITION_SIZE);
-  for (auto bucket_index = std::size_t{0}; bucket_index < radix_partition::PARTITION_SIZE; ++bucket_index) {
+  tasks.reserve(partition_size);
+  for (auto bucket_index = std::size_t{0}; bucket_index < partition_size; ++bucket_index) {
     tasks.emplace_back(std::make_shared<JobTask>([bucket_index, &data, &per_hash_function]() {
       if constexpr (requires { per_hash_function(data[bucket_index], bucket_index); }) {
         per_hash_function(data[bucket_index], bucket_index);
@@ -76,10 +76,10 @@ void spawn_and_wait_per_hash(PerHash<T>& data, auto&& per_hash_function) {
   Hyrise::get().scheduler()->schedule_and_wait_for_tasks(tasks);
 }
 
-void spawn_and_wait_per_hash(auto&& per_hash_function) {
+void spawn_and_wait_per_hash(const size_t partition_size, auto&& per_hash_function) {
   auto tasks = std::vector<std::shared_ptr<AbstractTask>>{};
-  tasks.reserve(radix_partition::PARTITION_SIZE);
-  for (auto bucket_index = std::size_t{0}; bucket_index < radix_partition::PARTITION_SIZE; ++bucket_index) {
+  tasks.reserve(partition_size);
+  for (auto bucket_index = std::size_t{0}; bucket_index < partition_size; ++bucket_index) {
     tasks.emplace_back(std::make_shared<JobTask>([bucket_index, &per_hash_function]() {
       if constexpr (requires { per_hash_function(bucket_index); }) {
         per_hash_function(bucket_index);

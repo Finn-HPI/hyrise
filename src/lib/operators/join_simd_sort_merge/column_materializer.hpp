@@ -75,12 +75,12 @@ class SMJColumnMaterializer {
     }
 
     auto min_value = std::numeric_limits<T>::max();
-    auto max_value = std::numeric_limits<T>::min();
+    auto max_value = std::numeric_limits<T>::lowest();
 
     for (auto chunk_id = ChunkID{0}; chunk_id < chunk_count; ++chunk_id) {
       auto& [chunk_min, chunk_max] = min_max_per_chunk[chunk_id];
-      min_value = std::min<T>(min_value, chunk_min);
-      max_value = std::max<T>(max_value, chunk_max);
+      min_value = min_value <= chunk_min ? min_value : chunk_min;
+      max_value = max_value >= chunk_max ? max_value : chunk_max;
     }
 
     Hyrise::get().scheduler()->schedule_and_wait_for_tasks(jobs);
@@ -118,8 +118,8 @@ class SMJColumnMaterializer {
         return;
       }
       const auto value = position.value();
-      min_value = std::min<T>(min_value, value);
-      max_value = std::max<T>(max_value, value);
+      min_value = min_value <= value ? min_value : value;
+      max_value = max_value >= value ? max_value : value;
       output.emplace_back(chunk_id, position.chunk_offset(), value);
     });
 
