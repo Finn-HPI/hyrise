@@ -114,8 +114,18 @@ int main() {
     file.close();
   };
 
-  run.template operator()<k_way_merge::KWayMerge<int64_t>>("kway_merge");
-  run.template operator()<multiway_merging::MultiwayMerger<4, int64_t>>("multiway_merge");
+  run.template operator()<k_way_merge::KWayMerge<int64_t>>("kway_merge_int");
+#ifdef __AVX512F__
+  run.template operator()<multiway_merging::MultiwayMerger<8, int64_t>>("multiway_merge_int");
+#else
+  run.template operator()<multiway_merging::MultiwayMerger<4, int64_t>>("multiway_merge_int");
+#endif
 
+  run.template operator()<k_way_merge::KWayMerge<double>>("kway_merge_double");
+#ifdef __AVX512F__
+  run.template operator()<multiway_merging::MultiwayMerger<8, double>>("multiway_merge_double");
+#else
+  run.template operator()<multiway_merging::MultiwayMerger<4, double>>("multiway_merge_double");
+#endif
   return 0;
 }
