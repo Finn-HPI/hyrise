@@ -18,15 +18,6 @@ class KWayMerge {
       return {};
     }
 
-    auto total_output_size =
-        std::accumulate(_sorted_buckets.begin(), _sorted_buckets.end(), size_t{0}, [](size_t sum, const auto& bucket) {
-          return sum + bucket->size;
-        });
-
-    auto output = simd_sort::simd_vector<SimdElement>();
-    output.reserve(total_output_size);
-
-    // Do a k-way merge.
     auto leaf_nodes = std::vector<std::pair<T*, T*>>(_sorted_buckets.size());
     std::transform(_sorted_buckets.begin(), _sorted_buckets.end(), leaf_nodes.begin(), [](const auto& bucket) {
       return std::make_pair(bucket->template begin<T>(), bucket->template end<T>());
@@ -37,6 +28,14 @@ class KWayMerge {
                                       return leaf.first == leaf.second;
                                     }),
                      leaf_nodes.end());
+
+    auto total_output_size =
+        std::accumulate(_sorted_buckets.begin(), _sorted_buckets.end(), size_t{0}, [](size_t sum, const auto& bucket) {
+          return sum + bucket->size;
+        });
+
+    auto output = simd_sort::simd_vector<SimdElement>();
+    output.reserve(total_output_size);
 
     auto cmp = [](const auto& lhs, const auto& rhs) {
       return *(lhs.first) > *(rhs.first);
@@ -55,6 +54,7 @@ class KWayMerge {
         std::ranges::push_heap(leaf_nodes, cmp);
       }
     }
+
     DebugAssert(std::is_sorted(output.begin(), output.end(),
                                [](auto& lhs, auto& rhs) {
                                  return *reinterpret_cast<T*>(&lhs) < *reinterpret_cast<T*>(&rhs);
