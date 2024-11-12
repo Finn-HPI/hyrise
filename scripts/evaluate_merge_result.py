@@ -1,10 +1,10 @@
-
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 from matplotlib import cm
 from matplotlib.colors import Normalize
+from matplotlib.lines import Line2D
 import sys
 
 # Check for command line arguments
@@ -66,6 +66,14 @@ surface2 = ax.plot_surface(
 ax.set_xlabel('Leaf Count')
 ax.set_ylabel('Leaf Size')
 ax.set_zlabel('Execution Time (μs)')
+
+# Create a custom legend
+legend_elements = [
+    Line2D([0], [0], color='blue', lw=4, label='MultiwayMerging'),
+    Line2D([0], [0], color='green', lw=4, label='KWayMerging')
+]
+
+ax.legend(handles=legend_elements, loc='upper left')
 
 
 plt.show()

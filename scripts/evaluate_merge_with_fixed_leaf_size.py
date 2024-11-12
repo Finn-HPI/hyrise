@@ -54,7 +54,7 @@ plt.figure(figsize=(10, 6))
 plt.plot(leaf_count1_fixed, execution_time1_fixed, label=f'MultiwayMerging (leaf_size={fixed_leaf_size})', color='blue', marker='o')
 
 # Plot for file 2
-plt.plot(leaf_count2_fixed, execution_time2_fixed, label=f'KWayMerging (leaf_size={fixed_leaf_size})', color='red', marker='x')
+plt.plot(leaf_count2_fixed, execution_time2_fixed, label=f'KWayMerging (leaf_size={fixed_leaf_size})', color='green', marker='x')
 
 # Labels and title
 plt.xlabel('Leaf Count')
