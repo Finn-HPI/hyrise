@@ -47,18 +47,17 @@ fi
 
 cmake -DCMAKE_CXX_COMPILER_LAUNCHER=$launcher -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_COMPILER=${path_to_compiler}${c_compiler} -DCMAKE_CXX_COMPILER=${path_to_compiler}${cxx_compiler} -DENABLE_COVERAGE=ON ..
 
-cores=$(grep -c ^processor /proc/cpuinfo 2>/dev/null || sysctl -n hw.ncpu)
-make hyriseTest -j $((cores / 20))
+make hyriseTest -j 8 
 cd -
 
 rm -fr coverage; mkdir coverage
 ./build-coverage/hyriseTest build-coverage --gtest_filter=-SQLiteTestRunnerInstances/*
   
 # merge the profile data using the llvm-profdata tool:
-${path_to_compiler}llvm-profdata merge -o ./default.profdata ./default.profraw
+${path_to_compiler}llvm-profdata-18 merge -o ./default.profdata ./default.profraw
 
 # run LLVM’s code coverage tool
-${path_to_compiler}llvm-cov show -format=html -instr-profile ./default.profdata build-coverage/hyriseTest -output-dir=./coverage ./src/lib/
+${path_to_compiler}llvm-cov-18 show -format=html -instr-profile ./default.profdata build-coverage/hyriseTest -output-dir=./coverage ./src/lib/
 
 echo Coverage Information is in ./coverage/index.html
 
@@ -66,7 +65,7 @@ echo Coverage Information is in ./coverage/index.html
 if [ "true" == "$generate_badge" ]; then
 
   # Make sure to only print function and line coverage (line coverage is at the end) to get the right metric.
-  ${path_to_compiler}llvm-cov report -instr-profile ./default.profdata build-coverage/hyriseTest ./src/lib/  -show-branch-summary=false  -show-region-summary=false > coverage.txt
+  ${path_to_compiler}llvm-cov-18 report -instr-profile ./default.profdata build-coverage/hyriseTest ./src/lib/  -show-branch-summary=false  -show-region-summary=false > coverage.txt
 
   # coverage badge generation
   coverage_percent=$(tail -c 7 coverage.txt)
