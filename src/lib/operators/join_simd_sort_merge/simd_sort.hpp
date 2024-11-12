@@ -61,7 +61,7 @@ inline void __attribute__((always_inline)) sort_chunk(DataChunk<T>& block) {
   const auto stop_level = log_block_size - 2;
   merge_level<count_per_vector, count_per_vector>(start_level, input_output_pointers, num_items);
   merge_level<count_per_vector, count_per_vector * 2>(start_level + 1, input_output_pointers, num_items);
-#pragma unroll
+
   for (auto level = std::size_t{start_level + 2}; level < stop_level; ++level) {
     merge_level<count_per_vector, count_per_vector * 4>(level, input_output_pointers, num_items);
   }
