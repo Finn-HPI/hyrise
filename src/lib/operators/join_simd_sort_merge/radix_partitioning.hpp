@@ -70,7 +70,7 @@ struct RadixPartition {
   };
 
   struct HistogramData {
-    explicit HistogramData(size_t radix_bits) : histogram(radix_bits) {}
+    explicit HistogramData(size_t partition_size) : histogram(partition_size) {}
 
     std::vector<BucketData> histogram;
     std::size_t cache_aligned_size{};
@@ -89,9 +89,9 @@ struct RadixPartition {
   }
 
   template <typename T>
-  static inline std::size_t _bucket_index(T key, std::size_t seed = 41) {
+  inline std::size_t _bucket_index(T key, std::size_t seed = 41) {
     boost::hash_combine(seed, key);
-    return seed & HASH_MASK;
+    return seed & _hash_mask;
   }
 
   HistogramData _compute_histogram() {
@@ -158,6 +158,7 @@ struct RadixPartition {
 
     auto histogram_data = std::move(_compute_histogram());
     auto histogram = histogram_data.histogram;
+
     storage_memory.resize(histogram_data.cache_aligned_size);
     working_memory.resize(histogram_data.cache_aligned_size);
 

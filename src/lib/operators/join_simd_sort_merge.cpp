@@ -293,7 +293,7 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
     // We try to have a partition size of roughly 256 KB to limit out-of-cache sorting and increase parallelism. This
     // value has been determined by an array of benchmarks and should be revisited for larger changes to the operator.
     // Ideally, it would incorporate hardware knowledge such as the actual L2 cache size of the current system.
-    constexpr auto MAX_SORT_ITEMS_COUNT = 4'194'304;
+    constexpr auto MAX_SORT_ITEMS_COUNT = 1'048'576;  //4'194'304;
     const size_t cluster_count_left = _sort_merge_join.left_input_table()->row_count() / MAX_SORT_ITEMS_COUNT;
     const size_t cluster_count_right = _sort_merge_join.right_input_table()->row_count() / MAX_SORT_ITEMS_COUNT;
 
