@@ -19,54 +19,66 @@ data1 = pd.read_csv(csv_path1, header=None)
 data2 = pd.read_csv(csv_path2, header=None)
 
 # Set column names
-data1.columns = ['leaf_count', 'leaf_size', 'execution_time']
-data2.columns = ['leaf_count', 'leaf_size', 'execution_time']
+data1.columns = ["leaf_count", "leaf_size", "execution_time"]
+data2.columns = ["leaf_count", "leaf_size", "execution_time"]
 
 # Convert execution_time from nanoseconds to microseconds
-data1['execution_time'] = data1['execution_time'] / 1000
-data2['execution_time'] = data2['execution_time'] / 1000
+data1["execution_time"] = data1["execution_time"] / 1000
+data2["execution_time"] = data2["execution_time"] / 1000
 
 # Extract columns for first file
-leaf_count1 = data1['leaf_count']
-leaf_size1 = data1['leaf_size']
-execution_time1 = data1['execution_time']
+leaf_count1 = data1["leaf_count"]
+leaf_size1 = data1["leaf_size"]
+execution_time1 = data1["execution_time"]
 
 # Extract columns for second file
-leaf_count2 = data2['leaf_count']
-leaf_size2 = data2['leaf_size']
-execution_time2 = data2['execution_time']
+leaf_count2 = data2["leaf_count"]
+leaf_size2 = data2["leaf_size"]
+execution_time2 = data2["execution_time"]
 
 # Filter data for the fixed leaf size
-data1_fixed = data1[data1['leaf_size'] == fixed_leaf_size]
-data2_fixed = data2[data2['leaf_size'] == fixed_leaf_size]
+data1_fixed = data1[data1["leaf_size"] == fixed_leaf_size]
+data2_fixed = data2[data2["leaf_size"] == fixed_leaf_size]
 
 # Extract leaf_count and execution_time for the fixed leaf size
-leaf_count1_fixed = data1_fixed['leaf_count']
-execution_time1_fixed = data1_fixed['execution_time']
+leaf_count1_fixed = data1_fixed["leaf_count"]
+execution_time1_fixed = data1_fixed["execution_time"]
 
-leaf_count2_fixed = data2_fixed['leaf_count']
-execution_time2_fixed = data2_fixed['execution_time']
+leaf_count2_fixed = data2_fixed["leaf_count"]
+execution_time2_fixed = data2_fixed["execution_time"]
 
 # Plot the comparison
 plt.figure(figsize=(10, 6))
 
 # Plot for file 1
-plt.plot(leaf_count1_fixed, execution_time1_fixed, label=f'MultiwayMerging (leaf_size={fixed_leaf_size})', color='blue', marker='o')
+plt.plot(
+    leaf_count1_fixed,
+    execution_time1_fixed,
+    label=f"MultiwayMerging (leaf_size={fixed_leaf_size})",
+    color="blue",
+    marker="o",
+)
 
 # Plot for file 2
-plt.plot(leaf_count2_fixed, execution_time2_fixed, label=f'KWayMerging (leaf_size={fixed_leaf_size})', color='green', marker='x')
+plt.plot(
+    leaf_count2_fixed,
+    execution_time2_fixed,
+    label=f"KWayMerging (leaf_size={fixed_leaf_size})",
+    color="green",
+    marker="x",
+)
 
 # Labels and title
-plt.xlabel('Leaf Count')
-plt.ylabel('Execution Time (μs)')
-plt.title(f'Execution Time Comparison for Fixed Leaf Size ({fixed_leaf_size})')
+plt.xlabel("Leaf Count")
+plt.ylabel("Execution Time (μs)")
+plt.title(f"Execution Time Comparison for Fixed Leaf Size ({fixed_leaf_size})")
 
 # Show legend
 plt.legend()
 plt.grid()
 
 # Save the plot to a file
-plt.savefig(f'fixed_leaf_size_{fixed_leaf_size}.png')
+plt.savefig(f"fixed_leaf_size_{fixed_leaf_size}.png")
 
 # Display the plot
 plt.show()

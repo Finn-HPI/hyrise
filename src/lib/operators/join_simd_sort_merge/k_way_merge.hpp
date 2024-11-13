@@ -1,5 +1,10 @@
 #pragma once
 
+#include <algorithm>
+#include <memory>
+#include <utility>
+#include <vector>
+
 #include "operators/join_simd_sort_merge/radix_partitioning.hpp"
 
 namespace hyrise::k_way_merge {

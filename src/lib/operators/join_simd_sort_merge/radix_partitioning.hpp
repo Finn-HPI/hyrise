@@ -1,6 +1,8 @@
 #pragma once
 
+#include <algorithm>
 #include <span>
+#include <utility>
 #include <vector>
 
 #include "operators/join_simd_sort_merge/simd_utils.hpp"
