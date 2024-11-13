@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <chrono>
+#include <fstream>
 #include <iostream>
 #include <random>
 #include <span>
@@ -44,8 +45,9 @@ void generate_leaf(std::span<SimdElement> range, std::mt19937& gen) {
 constexpr size_t count_per_vector() {
 #ifdef __AVX512F__
   return 8;
-#endif
+#else
   return 4;
+#endif
 }
 
 template <typename T>
@@ -59,7 +61,7 @@ T* merge_using_simd_merge(std::vector<simd_sort::DataChunk<T>>& chunk_list) {
 
 // leaf_size is required to be a multiple of 64 due to alignment assumptions.
 template <typename T>
-void benchmark(size_t leaf_count, size_t leaf_size) {
+void benchmark(size_t leaf_count, size_t leaf_size, std::ofstream& result) {
   std::cout << "leaf_count: " << leaf_count << ", leaf_size: " << leaf_size << std::endl;
   std::mt19937 gen(42);
 
@@ -134,8 +136,9 @@ void benchmark(size_t leaf_count, size_t leaf_size) {
 
   std::cout << (execution_time_mutliway_merging < execution_time_simd_merging ? "[FASTER]" : "[SLOWER]") << " ";
 
-  std::cout << "simd_merging: " << execution_time_simd_merging
-            << ", multiway_merging: " << execution_time_mutliway_merging << std::endl;
+  std::cout << "simd_merging: " << execution_time_simd_merging.count()
+            << ", multiway_merging: " << execution_time_mutliway_merging.count() << std::endl;
+  result << leaf_count << "," << leaf_size << "," << execution_time_simd_merging.count() << "," << execution_time_mutliway_merging.count() << std::endl;
 }
 
 int main() {
@@ -145,12 +148,25 @@ int main() {
   // Experiment to determine threshold between SIMD Merge and Mutliway Merging.
   // Input paramters are number of leaves and leaf size.
 
-  auto leaf_count = size_t{8};
+    std::string file_name = "results.csv";
+    std::ofstream file;
+    file.open(file_name, std::ios::app);
 
-  const auto max_leaf_size = size_t{10'000'000};
-  for (auto leaf_size = size_t{1'000}; leaf_size <= max_leaf_size; leaf_size += 1'000) {
-    benchmark<int64_t>(leaf_count, leaf_size);
+    // Check if file opened successfully
+    if (!file.is_open()) {
+      std::cerr << "Error: Could not open file " << file_name << std::endl;
+      return -1;
+    }
+
+
+
+  const auto max_leaf_size = size_t{2'000'000};
+  for (auto leaf_count = size_t{8}; leaf_count <= 128; leaf_count *=2) {
+
+  for (auto leaf_size = size_t{50'000}; leaf_size <= max_leaf_size; leaf_size += 50'000) {
+    benchmark<int64_t>(leaf_count, leaf_size, file);
   }
-
+  }
+  file.close();
   return 0;
 }
