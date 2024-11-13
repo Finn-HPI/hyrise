@@ -29,6 +29,12 @@ add_executable(
     benchmark.cpp
 )
 
+add_executable(
+    hyriseBenchmarkSIMDMerge
+    cxxopts.hpp
+    merge_benchmark.cpp
+)
+
 target_link_libraries(
     hyriseBenchmarkSIMD
     hyrise
