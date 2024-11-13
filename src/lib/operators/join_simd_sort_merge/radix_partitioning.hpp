@@ -6,10 +6,6 @@
 #include "operators/join_simd_sort_merge/simd_utils.hpp"
 #include "util.hpp"
 
-#if defined(__x86_64__)
-#include "immintrin.h"
-#endif
-
 namespace hyrise::radix_partition {
 
 struct Bucket {
@@ -112,20 +108,19 @@ struct RadixPartition {
     return histogram_data;
   }
 
-  void _store_cacheline(auto* destination, auto* source) {
+  inline void __attribute__((always_inline)) _store_cacheline(auto* destination, auto* source) {
+    auto nontemporal_store_vec = []<typename VecType>(auto* src, auto* dest) {
+      auto cache_line_vec = simd_sort::load_aligned<VecType>(src);
+      __builtin_nontemporal_store(cache_line_vec, dest);
+    };
 #if defined(__AVX512F__)
-    auto* destination_address = reinterpret_cast<__m512i*>(destination);
-    auto vec = _mm512_load_si512(reinterpret_cast<__m512i*>(source));
-    _mm512_stream_si512(destination_address, vec);
-#elif defined(__AVX2__) || defined(__AVX__)
-    auto* first_destination_address = reinterpret_cast<__m256i*>(destination);
-    auto vec1 = _mm256_load_si256(reinterpret_cast<__m256i*>(source));
-    auto* second_destination_address = first_destination_address + 1;
-    auto vec2 = _mm256_load_si256(reinterpret_cast<__m256i*>(source) + 1);
-    _mm256_stream_si256(first_destination_address, vec1);
-    _mm256_stream_si256(second_destination_address, vec2);
+    using Vec = simd_sort::Vec<64, int64_t>;  // 512-bit Vector.
+    nontemporal_store_vec.template operator()<Vec>(reinterpret_cast<Vec*>(source), reinterpret_cast<Vec*>(destination));
 #else
-    std::memcpy(destination, source, 64);
+    using Vec = simd_sort::Vec<32, int64_t>;  // 256-bit Vector.
+    nontemporal_store_vec.template operator()<Vec>(reinterpret_cast<Vec*>(source), reinterpret_cast<Vec*>(destination));
+    nontemporal_store_vec.template operator()<Vec>(reinterpret_cast<Vec*>(source) + 1,
+                                                   reinterpret_cast<Vec*>(destination) + 1);
 #endif
   }
 
@@ -215,11 +210,6 @@ struct RadixPartition {
   std::size_t num_partitions() const {
     return _partition_size;
   }
-
-  // std::size_t get_cache_aligned_size() const {
-  //   DebugAssert(_executed, "Do not call before execute.");
-  //   return _partitioned_output.size();
-  // }
 
   Bucket& bucket(std::size_t index) {
     DebugAssert(_executed, "Do not call before execute.");
