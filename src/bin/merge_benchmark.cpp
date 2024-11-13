@@ -78,14 +78,14 @@ uint64_t benchmark(size_t count_leaves, size_t leaf_size) {
   do_not_optimize_away(merger.merge());
   auto end = std::chrono::high_resolution_clock::now();
 
-  /* Getting number of milliseconds as an integer. */
+  /* Getting number of nanoseconds as an integer. */
   auto ns_int = duration_cast<std::chrono::nanoseconds>(end - start);
   return ns_int.count();
 }
 
 int main() {
   const auto name = pmr_string{"Merging Test"};
-  std::cout << "Playground: " << name << "!\n";
+  std::cout << "Benchmark: " << name << "!\n";
 
   const auto max_leaf_size = 1000 * 20;
   const auto increment = 1000;
