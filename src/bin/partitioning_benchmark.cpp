@@ -21,7 +21,7 @@ inline __attribute__((always_inline)) void do_not_optimize_away(Tp const& value)
 
 // leaf_size is required to be a multiple of 64 due to alignment assumptions.
 template <typename T>
-void benchmark(size_t number_of_partitions, std::ofstream& out, bool warmup = false) {
+void benchmark(size_t number_of_partitions, std::ofstream& out, size_t iterations, bool warmup = false) {
   std::mt19937 gen(42);
 
   auto num_items = size_t{100'000'000};
@@ -33,21 +33,34 @@ void benchmark(size_t number_of_partitions, std::ofstream& out, bool warmup = fa
     item.index = dist(gen);
   }
 
-  auto radix_partition = radix_partition::RadixPartition<T>(items, number_of_partitions);
+  auto avg_time_histogram = size_t{0};
+  auto avg_time_init = size_t{0};
+  auto avg_time_partition = size_t{0};
 
-  auto temp_mem1 = simd_sort::simd_vector<SimdElement>{};
-  auto temp_mem2 = simd_sort::simd_vector<SimdElement>{};
+  for (auto iteration = size_t{0}; iteration < iterations; ++iteration) {
+    auto radix_partition = radix_partition::RadixPartition<T>(items, number_of_partitions);
 
-  radix_partition.execute(temp_mem1, temp_mem2);
+    auto temp_mem1 = simd_sort::simd_vector<SimdElement>{};
+    auto temp_mem2 = simd_sort::simd_vector<SimdElement>{};
 
-  do_not_optimize_away(radix_partition.buckets());
+    radix_partition.execute(temp_mem1, temp_mem2);
 
-  auto [time_histogram, time_init_partitions, time_partition] = radix_partition.performance_info;
-  do_not_optimize_away(time_histogram);
-  if (warmup) {
-    return;
+    do_not_optimize_away(radix_partition.buckets());
+
+    auto [time_histogram, time_init_partitions, time_partition] = radix_partition.performance_info;
+    do_not_optimize_away(avg_time_histogram);
+    if (warmup) {
+      return;
+    }
+    avg_time_histogram += time_histogram;
+    avg_time_init += time_init_partitions;
+    avg_time_partition += time_partition;
   }
-  out << number_of_partitions << "," << time_histogram << "," << time_init_partitions << "," << time_partition
+  avg_time_histogram /= iterations;
+  avg_time_init /= iterations;
+  avg_time_partition /= iterations;
+
+  out << number_of_partitions << "," << avg_time_histogram << "," << avg_time_init << "," << avg_time_partition
       << std::endl;
 }
 }  // namespace
@@ -67,15 +80,15 @@ int main() {
   file << "num_partitions,time_histogram,time_init,time_partition" << '\n';
 
   // Start warmup runs.
-  benchmark<int64_t>(32, file, true);
-  benchmark<int64_t>(64, file, true);
-  benchmark<int64_t>(128, file, true);
+  benchmark<int64_t>(32, file, 5, true);
+  benchmark<int64_t>(64, file, 5, true);
+  benchmark<int64_t>(128, file, 5, true);
   // End warmup runs.
 
   const auto max_fan_out = size_t{16384};
   for (auto fan_out = size_t{32}; fan_out <= max_fan_out; fan_out *= 2) {
     std::cout << "fan_out: " << fan_out << std::endl;
-    benchmark<int64_t>(fan_out, file);
+    benchmark<int64_t>(fan_out, file, 5);
   }
   // file.close();
   return 0;
