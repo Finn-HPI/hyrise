@@ -1,7 +1,9 @@
 #pragma once
 
 #include <algorithm>
+#include <climits>
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <utility>
 #include <vector>
@@ -281,12 +283,12 @@ struct SortingNetwork<8, T> {
 
     auto row_0 = load_aligned<VecType>(data);
     auto row_1 = load_aligned<VecType>(data + COUNT_PER_VECTOR);
-    auto row_2 = load_aligned<VecType>(data + 2 * COUNT_PER_VECTOR);
-    auto row_3 = load_aligned<VecType>(data + 3 * COUNT_PER_VECTOR);
-    auto row_4 = load_aligned<VecType>(data + 4 * COUNT_PER_VECTOR);
-    auto row_5 = load_aligned<VecType>(data + 5 * COUNT_PER_VECTOR);
-    auto row_6 = load_aligned<VecType>(data + 6 * COUNT_PER_VECTOR);
-    auto row_7 = load_aligned<VecType>(data + 7 * COUNT_PER_VECTOR);
+    auto row_2 = load_aligned<VecType>(data + (2 * COUNT_PER_VECTOR));
+    auto row_3 = load_aligned<VecType>(data + (3 * COUNT_PER_VECTOR));
+    auto row_4 = load_aligned<VecType>(data + (4 * COUNT_PER_VECTOR));
+    auto row_5 = load_aligned<VecType>(data + (5 * COUNT_PER_VECTOR));
+    auto row_6 = load_aligned<VecType>(data + (6 * COUNT_PER_VECTOR));
+    auto row_7 = load_aligned<VecType>(data + (7 * COUNT_PER_VECTOR));
 
     // Level 1 comparisons.
     compare_min_max(row_1, row_3);
@@ -347,12 +349,12 @@ struct SortingNetwork<8, T> {
     // Write to output
     store_aligned(row_0, output);
     store_aligned(row_1, output + COUNT_PER_VECTOR);
-    store_aligned(row_2, output + 2 * COUNT_PER_VECTOR);
-    store_aligned(row_3, output + 3 * COUNT_PER_VECTOR);
-    store_aligned(row_4, output + 4 * COUNT_PER_VECTOR);
-    store_aligned(row_5, output + 5 * COUNT_PER_VECTOR);
-    store_aligned(row_6, output + 6 * COUNT_PER_VECTOR);
-    store_aligned(row_7, output + 7 * COUNT_PER_VECTOR);
+    store_aligned(row_2, output + (2 * COUNT_PER_VECTOR));
+    store_aligned(row_3, output + (3 * COUNT_PER_VECTOR));
+    store_aligned(row_4, output + (4 * COUNT_PER_VECTOR));
+    store_aligned(row_5, output + (5 * COUNT_PER_VECTOR));
+    store_aligned(row_6, output + (6 * COUNT_PER_VECTOR));
+    store_aligned(row_7, output + (7 * COUNT_PER_VECTOR));
   }
 };
 

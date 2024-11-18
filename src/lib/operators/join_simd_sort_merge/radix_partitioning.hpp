@@ -46,9 +46,15 @@ template <typename ColumnType>
 struct RadixPartition {
  public:
   explicit RadixPartition(const std::span<SimdElement> elements, size_t cluster_count)
-      : _partition_size(cluster_count), _hash_mask(cluster_count - 1), _has_data(true), _elements(elements) {}
+      : _partition_size(cluster_count),
+        _bitshift_count{32u - simd_sort::log2_builtin(cluster_count)},
+        _has_data(true),
+        _elements(elements) {}
 
   RadixPartition() = default;
+
+  // Needed for benchmark.
+  std::tuple<size_t, size_t, size_t> performance_info;
 
  protected:
   using CacheLine = union {
@@ -62,7 +68,7 @@ struct RadixPartition {
     } data;
   };
 
-  using BucketData = struct {
+  struct BucketData {
     std::size_t count;
     std::size_t cache_aligend_count;
   };
@@ -75,7 +81,7 @@ struct RadixPartition {
   };
 
   size_t _partition_size{};
-  size_t _hash_mask{};
+  size_t _bitshift_count{};
   bool _has_data = false;
   bool _executed = false;
   std::span<SimdElement> _elements;
@@ -86,10 +92,8 @@ struct RadixPartition {
     return (value + TUPLES_PER_CACHELINE - 1) & ~(TUPLES_PER_CACHELINE - 1);
   }
 
-  template <typename T>
-  inline std::size_t _bucket_index(T key, std::size_t seed = 41) {
-    boost::hash_combine(seed, key);
-    return seed & _hash_mask;
+  size_t _bucket_index(uint32_t key) {
+    return key >> _bitshift_count;
   }
 
   HistogramData _compute_histogram() {
@@ -110,7 +114,7 @@ struct RadixPartition {
     return histogram_data;
   }
 
-  inline void __attribute__((always_inline)) _store_cacheline(auto* destination, auto* source) {
+  void __attribute__((always_inline)) _store_cacheline(auto* destination, auto* source) {
     auto nontemporal_store_vec = []<typename VecType>(auto* src, auto* dest) {
       auto cache_line_vec = simd_sort::load_aligned<VecType>(src);
       __builtin_nontemporal_store(cache_line_vec, dest);
@@ -136,10 +140,14 @@ struct RadixPartition {
                simd_sort::simd_vector<SimdElement>& working_memory) {
     DebugAssert(_has_data, "No input data to partition.");
     DebugAssert(!_executed, "RadixPartition execute can only be called once.");
-    _partitions.resize(_partition_size);
-    _partiton_offsets.resize(_partition_size);
+
+    // NOLINTNEXTLINE
+    size_t time_histogram, time_init_buffer, time_partition_elements;
 
     if (_partition_size == 1) {
+      _partitions.resize(_partition_size);
+      _partiton_offsets.resize(_partition_size);
+
       const auto cluster_size = _elements.size();
       storage_memory.resize(cluster_size);
       working_memory.resize(cluster_size);
@@ -153,8 +161,17 @@ struct RadixPartition {
       return;
     }
 
+    auto start_compute_histogram = std::chrono::high_resolution_clock::now();
     auto histogram_data = std::move(_compute_histogram());
-    auto histogram = histogram_data.histogram;
+    auto& histogram = histogram_data.histogram;
+
+    auto end_compute_histogram = std::chrono::high_resolution_clock::now();
+    time_histogram = duration_cast<std::chrono::milliseconds>(end_compute_histogram - start_compute_histogram).count();
+
+    auto start_init_buffer = std::chrono::high_resolution_clock::now();
+
+    _partitions.resize(_partition_size);
+    _partiton_offsets.resize(_partition_size);
 
     storage_memory.resize(histogram_data.cache_aligned_size);
     working_memory.resize(histogram_data.cache_aligned_size);
@@ -180,6 +197,10 @@ struct RadixPartition {
       partition.data = output_start_address + buffers[bucket_index].data.output_offset;
     }
 
+    auto end_init_buffer = std::chrono::high_resolution_clock::now();
+    time_init_buffer = duration_cast<std::chrono::milliseconds>(end_init_buffer - start_init_buffer).count();
+
+    auto start_partitioning = std::chrono::high_resolution_clock::now();
     for (auto& element : _elements) {
       const auto bucket_index = _bucket_index(element.key);
       __builtin_prefetch(&buffers[bucket_index], 1, 0);
@@ -206,6 +227,10 @@ struct RadixPartition {
         std::memcpy(output_address, &buffer, local_offset * 8);
       }
     }
+    auto end_partitioning = std::chrono::high_resolution_clock::now();
+    time_partition_elements = duration_cast<std::chrono::milliseconds>(end_partitioning - start_partitioning).count();
+
+    performance_info = {time_histogram, time_init_buffer, time_partition_elements};
     _executed = true;
   }
 

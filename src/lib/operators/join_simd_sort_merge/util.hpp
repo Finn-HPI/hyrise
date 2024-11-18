@@ -14,8 +14,11 @@ namespace radix_partition {
 
 constexpr auto RADIX_BITS = uint8_t{8};
 constexpr auto HASH_MASK = std::size_t{(1u << RADIX_BITS) - 1};
-// constexpr auto PARTITION_SIZE = uint32_t{1u << RADIX_BITS};
+#if defined(__powerpc__) || defined(__ppc__) || defined(__PPC__)
+constexpr auto CACHE_LINE_SIZE = std::size_t{128};
+#else
 constexpr auto CACHE_LINE_SIZE = std::size_t{64};
+#endif
 constexpr auto TUPLES_PER_CACHELINE = CACHE_LINE_SIZE / 8;
 
 }  // namespace radix_partition

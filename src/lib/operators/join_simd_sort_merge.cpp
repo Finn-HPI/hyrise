@@ -327,8 +327,8 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
     static constexpr auto GATHER_WIDTH = 8;
 #endif
 
-    inline auto __attribute__((always_inline)) _gather_indices(const int64_t* __restrict index_begin,
-                                                               const size_t length) const {
+    auto __attribute__((always_inline)) _gather_indices(const int64_t* __restrict index_begin,
+                                                        const size_t length) const {
       auto indices = std::array<uint32_t, GATHER_WIDTH>{};
 
 #pragma clang loop vectorize(enable) interleave(enable) unroll(disable)
@@ -339,8 +339,8 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
     }
 
     template <typename T>
-    inline auto __attribute__((always_inline)) _gather_row_ids(const uint32_t* __restrict index_begin,
-                                                               const T* __restrict data, const size_t length) const {
+    auto __attribute__((always_inline)) _gather_row_ids(const uint32_t* __restrict index_begin,
+                                                        const T* __restrict data, const size_t length) const {
       auto loaded_data = std::array<T, GATHER_WIDTH>{};
 #pragma clang loop vectorize(enable) interleave(enable) unroll(disable)
       for (auto index = size_t{0}; index < length; ++index) {

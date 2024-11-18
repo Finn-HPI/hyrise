@@ -5,15 +5,13 @@
 #include <memory>
 #include <random>
 
-// #include "operators/join_simd_sort_merge/k_way_merge.hpp"
+#include "operators/join_simd_sort_merge/k_way_merge.hpp"
 #include "operators/join_simd_sort_merge/multiway_merging.hpp"
 #include "operators/join_simd_sort_merge/radix_partitioning.hpp"
 #include "operators/join_simd_sort_merge/simd_utils.hpp"
 #include "types.hpp"
 
 using namespace hyrise;  // NOLINT(build/namespaces)
-
-namespace {
 
 template <class Tp>
 inline __attribute__((always_inline)) void do_not_optimize_away(Tp const& value) {
@@ -59,15 +57,15 @@ std::vector<std::unique_ptr<radix_partition::Bucket>> generate_sorted_buckets(
   return buckets;
 }
 
-// void clear_cache() {
-//   auto clear = std::vector<int>();
-//   clear.resize(size_t{500} * 1000 * 1000, 42);
-//   const auto clear_cache_size = clear.size();
-//   for (auto index = size_t{0}; index < clear_cache_size; index++) {
-//     clear[index] += 1;
-//   }
-//   clear.resize(0);
-// }
+void clear_cache() {
+  auto clear = std::vector<int>();
+  clear.resize(size_t{500} * 1000 * 1000, 42);
+  const auto clear_cache_size = clear.size();
+  for (auto index = size_t{0}; index < clear_cache_size; index++) {
+    clear[index] += 1;
+  }
+  clear.resize(0);
+}
 
 template <class C>
 uint64_t benchmark(size_t count_leaves, size_t leaf_size) {
@@ -84,8 +82,6 @@ uint64_t benchmark(size_t count_leaves, size_t leaf_size) {
   auto ns_int = duration_cast<std::chrono::nanoseconds>(end - start);
   return ns_int.count();
 }
-
-}  // namespace
 
 int main() {
   const auto name = pmr_string{"Merging Test"};
@@ -118,18 +114,18 @@ int main() {
     file.close();
   };
 
-  //   run.template operator()<k_way_merge::KWayMerge<int64_t>>("kway_merge_int");
-  // #ifdef __AVX512F__
-  //   run.template operator()<multiway_merging::MultiwayMerger<8, int64_t>>("multiway_merge_int");
-  // #else
+  run.template operator()<k_way_merge::KWayMerge<int64_t>>("kway_merge_int");
+#ifdef __AVX512F__
+  run.template operator()<multiway_merging::MultiwayMerger<8, int64_t>>("multiway_merge_int");
+#else
   run.template operator()<multiway_merging::MultiwayMerger<4, int64_t>>("multiway_merge_int");
-  // #endif
-  //
-  //   run.template operator()<k_way_merge::KWayMerge<double>>("kway_merge_double");
-  // #ifdef __AVX512F__
-  //   run.template operator()<multiway_merging::MultiwayMerger<8, double>>("multiway_merge_double");
-  // #else
-  //   run.template operator()<multiway_merging::MultiwayMerger<4, double>>("multiway_merge_double");
-  // #endif
+#endif
+
+  run.template operator()<k_way_merge::KWayMerge<double>>("kway_merge_double");
+#ifdef __AVX512F__
+  run.template operator()<multiway_merging::MultiwayMerger<8, double>>("multiway_merge_double");
+#else
+  run.template operator()<multiway_merging::MultiwayMerger<4, double>>("multiway_merge_double");
+#endif
   return 0;
 }

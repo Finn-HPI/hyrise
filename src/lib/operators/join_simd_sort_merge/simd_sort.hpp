@@ -8,6 +8,9 @@
 
 #include <boost/sort/sort.hpp>
 
+#include "hyrise.hpp"
+#include "scheduler/abstract_task.hpp"
+#include "scheduler/job_task.hpp"
 #include "simd_utils.hpp"
 #include "two_way_merge.hpp"
 
@@ -73,8 +76,8 @@ inline void __attribute__((always_inline)) sort_chunk(DataChunk<T>& block) {
 
   using TwoWayMerge = TwoWayMerge<count_per_vector, T>;
   TwoWayMerge::template merge_equal_length<count_per_vector * 4>(input, input + input_length, output, input_length);
-  TwoWayMerge::template merge_equal_length<count_per_vector * 4>(input + 2 * input_length, input + 3 * input_length,
-                                                                 output + 2 * input_length, input_length);
+  TwoWayMerge::template merge_equal_length<count_per_vector * 4>(input + (2 * input_length), input + (3 * input_length),
+                                                                 output + (2 * input_length), input_length);
   input_length <<= 1u;
   TwoWayMerge::template merge_equal_length<count_per_vector * 4>(output, output + input_length, input, input_length);
   block.input = output;
@@ -95,6 +98,38 @@ inline std::size_t __attribute__((always_inline)) merge_chunk_list(std::vector<D
     chunk_list[updated_chunk_count] = {chunk_info_a.output, chunk_info_a.input, chunk_info_a.size + chunk_info_b.size};
     ++updated_chunk_count;
   }
+  // If we had odd many blocks, we have one additional unmerged block for the next iteration.
+  if (chunk_count % 2) {
+    chunk_list[updated_chunk_count] = chunk_list[chunk_count - 1];
+    ++updated_chunk_count;
+  }
+  return updated_chunk_count;
+}
+
+template <std::size_t count_per_vector, typename T>
+inline std::size_t __attribute__((always_inline)) parallel_merge_chunk_list(std::vector<DataChunk<T>>& chunk_list,
+                                                                            std::size_t chunk_count) {
+  using TwoWayMerge = TwoWayMerge<count_per_vector, T>;
+  auto updated_chunk_count = std::size_t{0};
+  const auto last_chunk_index = chunk_count - 1;
+
+  auto merge_tasks = std::vector<std::shared_ptr<AbstractTask>>{};
+
+  for (auto chunk_index = std::size_t{0}; chunk_index < last_chunk_index; chunk_index += 2) {
+    const auto& chunk_info_a = chunk_list[chunk_index];
+    const auto& chunk_info_b = chunk_list[chunk_index + 1];
+
+    merge_tasks.push_back(std::make_shared<JobTask>([&chunk_list, chunk_info_a, chunk_info_b, updated_chunk_count]() {
+      TwoWayMerge::template merge_variable_length<count_per_vector * 4>(
+          chunk_info_a.input, chunk_info_b.input, chunk_info_a.output, chunk_info_a.size, chunk_info_b.size);
+      chunk_list[updated_chunk_count] = {chunk_info_a.output, chunk_info_a.input,
+                                         chunk_info_a.size + chunk_info_b.size};
+    }));
+    ++updated_chunk_count;
+  }
+
+  Hyrise::get().scheduler()->schedule_and_wait_for_tasks(merge_tasks);
+
   // If we had odd many blocks, we have one additional unmerged block for the next iteration.
   if (chunk_count % 2) {
     chunk_list[updated_chunk_count] = chunk_list[chunk_count - 1];

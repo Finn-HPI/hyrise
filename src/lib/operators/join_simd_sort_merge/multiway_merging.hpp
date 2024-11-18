@@ -106,10 +106,14 @@ class MultiwayMerger {
     }
 
     // Setup buffers for innner nodes.
-    constexpr auto CACHE_USAGE = 0.8;
-    constexpr auto AVAILABLE_L2_CACHE = static_cast<size_t>(L2_CACHE_SIZE * CACHE_USAGE);
+    // std::cout << "L2_CACHE_SIZE: " << L2_CACHE_SIZE << std::endl;
+    // constexpr auto CACHE_USAGE = 1;
+    // constexpr auto AVAILABLE_L2_CACHE = static_cast<size_t>(L2_CACHE_SIZE * CACHE_USAGE);
 
-    _buffer_size = (AVAILABLE_L2_CACHE / sizeof(SimdElement)) / count_non_done_inner_nodes;
+    _buffer_size = 10240;
+
+    // _buffer_size = (AVAILABLE_L2_CACHE / sizeof(SimdElement)) / count_non_done_inner_nodes;
+    // std::cout << "buffer size: " << _buffer_size << std::endl;
     _read_threshold = _buffer_size / 2;
 
     _fifo_buffer.resize(count_non_done_inner_nodes * _buffer_size);
@@ -118,7 +122,7 @@ class MultiwayMerger {
       if (_done[node_index]) {
         continue;
       }
-      _nodes[node_index].set_buffer(_fifo_buffer.data() + buffer_index * _buffer_size);
+      _nodes[node_index].set_buffer(_fifo_buffer.data() + (buffer_index * _buffer_size));
       ++buffer_index;
     }
   }

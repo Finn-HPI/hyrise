@@ -17,8 +17,30 @@ add_executable(
     playground.cpp
 )
 
+add_executable(
+    hyriseBenchmarkSIMDMerge
+    merge_benchmark.cpp
+)
+
+add_executable(
+    hyriseBenchmarkPartitioning
+    partitioning_benchmark.cpp
+)
+
 target_link_libraries(
     hyrisePlayground
+    hyrise
+    hyriseBenchmarkLib
+)
+
+target_link_libraries(
+    hyriseBenchmarkPartitioning
+    hyrise
+    hyriseBenchmarkLib
+)
+
+target_link_libraries(
+    hyriseBenchmarkSIMDMerge
     hyrise
     hyriseBenchmarkLib
 )
@@ -27,12 +49,6 @@ add_executable(
     hyriseBenchmarkSIMD
     cxxopts.hpp
     benchmark.cpp
-)
-
-add_executable(
-    hyriseBenchmarkSIMDMerge
-    cxxopts.hpp
-    merge_benchmark.cpp
 )
 
 target_link_libraries(
