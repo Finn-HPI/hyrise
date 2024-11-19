@@ -25,6 +25,11 @@ constexpr auto TUPLES_PER_CACHELINE = CACHE_LINE_SIZE / 8;
 
 constexpr auto THREAD_COUNT = 8;
 
+enum class ExecutionStrategy : std::uint8_t {
+  SEQUENTIAL,
+  PARALLEL,
+};
+
 struct SimdElement {
   uint32_t index;
   uint32_t key;

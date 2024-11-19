@@ -13,8 +13,45 @@
 
 namespace hyrise::multiway_merging {
 
+// enum class ExecutionStrategy : std::uint8_t {
+//   SEQUENTIAL,
+//   PARALLEL,
+// };
+//
+// template <ExecutionStrategy execution_strategy>
+// struct Executer {};
+//
+// template <>
+// struct Executer<ExecutionStrategy::SEQUENTIAL> {
+//   void add_task(auto&& task) {
+//     task();
+//   }
+//
+//   void reserve(size_t size) {}
+//
+//   void spawn_and_wait() {}
+// };
+//
+// template <>
+// struct Executer<ExecutionStrategy::PARALLEL> {
+//   void add_task(auto&& task) {
+//     _tasks.push_back(std::make_shared<JobTask>(task));
+//   }
+//
+//   void reserve(size_t size) {
+//     _tasks.reserve(size);
+//   }
+//
+//   void spawn_and_wait() {
+//     Hyrise::get().scheduler()->schedule_and_wait_for_tasks(_tasks);
+//   }
+//
+//  private:
+//   std::vector<std::shared_ptr<AbstractTask>> _tasks;
+// };
+
 template <size_t count_per_vector, typename T>
-class MultiwayMerger {
+class ParMultiwayMerger {
   using Bucket = radix_partition::Bucket;
   using CircularBuffer = circular_buffer::CircularBuffer;
   using TwoWayMerge = simd_sort::TwoWayMerge<count_per_vector, T>;
@@ -22,7 +59,7 @@ class MultiwayMerger {
  public:
   using value_type = T;
 
-  explicit MultiwayMerger(std::vector<std::unique_ptr<Bucket>>& sorted_buckets)
+  explicit ParMultiwayMerger(std::vector<std::unique_ptr<Bucket>>& sorted_buckets)
       : _leaf_count(std::bit_ceil(sorted_buckets.size())),
         _sorted_buckets(std::move(sorted_buckets)),
         _nodes(2 * _leaf_count),
@@ -107,9 +144,10 @@ class MultiwayMerger {
 
     // Setup buffers for innner nodes.
     constexpr auto CACHE_USAGE = 0.9;
-    constexpr auto AVAILABLE_L2_CACHE = static_cast<size_t>(L2_CACHE_SIZE * CACHE_USAGE);
+    constexpr auto L3_CACHE_SIZE = 16 * 1024 * 1024;  // 16MiB
+    constexpr auto AVAILABLE_L3_CACHE = static_cast<size_t>(L3_CACHE_SIZE * CACHE_USAGE);
 
-    _buffer_size = (AVAILABLE_L2_CACHE / sizeof(SimdElement)) / count_non_done_inner_nodes;
+    _buffer_size = (AVAILABLE_L3_CACHE / sizeof(SimdElement)) / count_non_done_inner_nodes;
     _read_threshold = _buffer_size / 2;
 
     _fifo_buffer.resize(count_non_done_inner_nodes * _buffer_size);
@@ -124,18 +162,21 @@ class MultiwayMerger {
   }
 
   void _execute(SimdElement* output) {
-    while (!_finished) {
-      _finished = true;
-      _load_from_leaves();
-      _execute_ready_nodes(output);
+    auto tasks = std::vector<std::shared_ptr<AbstractTask>>{};
+    tasks.reserve(_nodes.size());
+
+    while (!_finished.load()) {
+      _finished.store(true);
+      _load_from_leaves(tasks);
+      _execute_ready_nodes(output, tasks);
     }
   }
 
-  void _load_from_leaves() {
+  void _load_from_leaves(std::vector<std::shared_ptr<AbstractTask>>& tasks) {
     const auto first_leaf_index = NodeIndex{_leaf_count};
     const auto num_nodes = _nodes.size();
 
-    static auto empty_bucket = Bucket{nullptr, 0};
+    tasks.clear();
 
     for (auto leaf_index = first_leaf_index; leaf_index < num_nodes; leaf_index += 2) {
       auto node_index = _parent(leaf_index);
@@ -145,59 +186,84 @@ class MultiwayMerger {
       const auto left_bucket_index = leaf_index - first_leaf_index;
       const auto right_bucket_index = left_bucket_index + 1;
 
-      auto& left_bucket = _done[leaf_index] ? empty_bucket : *_sorted_buckets[left_bucket_index];
-      auto& right_bucket = _done[leaf_index + 1] ? empty_bucket : *_sorted_buckets[right_bucket_index];
+      auto load_into_node = [this, leaf_index, node_index, left_bucket_index, right_bucket_index]() {
+        static auto empty_bucket = Bucket{nullptr, 0};
 
-      auto& buffer = _nodes[node_index];
+        auto& left_bucket = _done[leaf_index] ? empty_bucket : *_sorted_buckets[left_bucket_index];
+        auto& right_bucket = _done[leaf_index + 1] ? empty_bucket : *_sorted_buckets[right_bucket_index];
+        auto& buffer = _nodes[node_index];
 
-      DebugAssert(std::is_sorted(left_bucket.template begin<T>(), left_bucket.template end<T>()),
-                  "Left bucket not sorted");
-      DebugAssert(std::is_sorted(right_bucket.template begin<T>(), right_bucket.template end<T>()),
-                  "Right bucket not sorted");
+        DebugAssert(std::is_sorted(left_bucket.template begin<T>(), left_bucket.template end<T>()),
+                    "Left bucket not sorted");
+        DebugAssert(std::is_sorted(right_bucket.template begin<T>(), right_bucket.template end<T>()),
+                    "Right bucket not sorted");
 
-      DebugAssert(buffer.debug_is_sorted<T>(_buffer_size), "Before merging from leaves, the buffer is not sorted.");
+        DebugAssert(buffer.debug_is_sorted<T>(_buffer_size), "Before merging from leaves, the buffer is not sorted.");
 
-      const auto num_items_read = _load_and_merge_from_leaves(buffer, left_bucket, right_bucket);
+        const auto num_items_read = _load_and_merge_from_leaves(buffer, left_bucket, right_bucket);
 
-      DebugAssert(buffer.debug_is_sorted<T>(_buffer_size), "After merging from leaves, the buffer is not sorted.");
+        DebugAssert(buffer.debug_is_sorted<T>(_buffer_size), "After merging from leaves, the buffer is not sorted.");
 
-      _done[node_index] = num_items_read == 0 || (left_bucket.empty() && right_bucket.empty());
-      _finished &= _done[node_index];
+        _done[node_index] = num_items_read == 0 || (left_bucket.empty() && right_bucket.empty());
+
+        auto expected = true;
+        _finished.compare_exchange_weak(expected, _done[node_index]);
+      };
+      tasks.push_back(std::make_shared<JobTask>(load_into_node));
     }
+
+    Hyrise::get().scheduler()->schedule_and_wait_for_tasks(tasks);
   }
 
-  void _execute_ready_nodes(SimdElement*& output) {
-    const auto first_relevant_inner_node = _parent(_leaf_count - 1);
+  void _execute_ready_nodes(SimdElement*& output, std::vector<std::shared_ptr<AbstractTask>>& tasks) {
     // After loading the first level of inner-nodes with data from the leaves, we check all remaining inner-nodes
     // from bottom to top if they are ready to be executed. If that is the case we execute them.
-    for (auto node_index = first_relevant_inner_node; node_index > ROOT; --node_index) {
-      auto left_child_index = _left_child(node_index);
-      auto right_child_index = _right_child(node_index);
 
-      auto& buffer = _nodes[node_index];
-      auto& left_child_buffer = _nodes[left_child_index];
-      auto& right_child_buffer = _nodes[right_child_index];
+    auto node_index = _parent(_leaf_count - 1);
 
-      if (_done[node_index]) {
-        continue;
-      }
+    // iterate over the inner layers of the binary tree.
+    while (node_index > ROOT) {
+      const auto stop_node_index = _parent(node_index);
 
-      const auto children_done = _done[left_child_index] || _done[right_child_index];
-      if ((children_done || buffer.fill_count() < _read_threshold) && buffer.fill_count() < _buffer_size) {
-        if (children_done ||
-            (right_child_buffer.fill_count() >= _read_threshold && left_child_buffer.fill_count() >= _read_threshold)) {
-          DebugAssert(left_child_buffer.debug_is_sorted<T>(_buffer_size), "Left child buffer is not sorted.");
-          DebugAssert(right_child_buffer.debug_is_sorted<T>(_buffer_size), "Right child buffer is not sorted.");
+      tasks.clear();
 
-          _merge_children_into_parent(buffer, left_child_buffer, right_child_buffer, _done[left_child_index],
-                                      _done[right_child_index]);
-          DebugAssert(buffer.debug_is_sorted<T>(_buffer_size),
-                      "After merging from inner child nodes, the buffer is not sorted.");
+      // Iterate over inner node layer.
+      for (; node_index > stop_node_index; --node_index) {
+        if (_done[node_index]) {
+          continue;
         }
-        _done[node_index] = (_done[left_child_index] && _done[right_child_index]) &&
-                            (left_child_buffer.empty() && right_child_buffer.empty());
+        auto left_child_index = _left_child(node_index);
+        auto right_child_index = _right_child(node_index);
+
+        auto merge_children_into_parent = [this, node_index, left_child_index, right_child_index]() {
+          auto& buffer = _nodes[node_index];
+          auto& left_child_buffer = _nodes[left_child_index];
+          auto& right_child_buffer = _nodes[right_child_index];
+
+          const auto children_done = _done[left_child_index] || _done[right_child_index];
+
+          if ((children_done || buffer.fill_count() < _read_threshold) && buffer.fill_count() < _buffer_size) {
+            if (children_done || (right_child_buffer.fill_count() >= _read_threshold &&
+                                  left_child_buffer.fill_count() >= _read_threshold)) {
+              DebugAssert(left_child_buffer.debug_is_sorted<T>(_buffer_size), "Left child buffer is not sorted.");
+              DebugAssert(right_child_buffer.debug_is_sorted<T>(_buffer_size), "Right child buffer is not sorted.");
+
+              _merge_children_into_parent(buffer, left_child_buffer, right_child_buffer, _done[left_child_index],
+                                          _done[right_child_index]);
+              DebugAssert(buffer.debug_is_sorted<T>(_buffer_size),
+                          "After merging from inner child nodes, the buffer is not sorted.");
+            }
+            _done[node_index] = (_done[left_child_index] && _done[right_child_index]) &&
+                                (left_child_buffer.empty() && right_child_buffer.empty());
+          }
+          auto expected = true;
+          _finished.compare_exchange_weak(expected, _done[node_index]);
+        };
+
+        tasks.push_back(std::make_shared<JobTask>(merge_children_into_parent));
       }
-      _finished &= _done[node_index];
+
+      Hyrise::get().scheduler()->schedule_and_wait_for_tasks(tasks);
     }
 
     // Finally we do a final merge of the left and right child of the ROOT and write the merged elemets to output.
@@ -277,9 +343,8 @@ class MultiwayMerger {
     return total_number_of_writes;
   }
 
-  static inline std::pair<size_t, size_t> _merge_children(std::span<SimdElement> left_input,
-                                                          std::span<SimdElement> right_input,
-                                                          std::span<SimdElement> output) {
+  static std::pair<size_t, size_t> _merge_children(std::span<SimdElement> left_input,
+                                                   std::span<SimdElement> right_input, std::span<SimdElement> output) {
     auto count_reads_left = size_t{0};
     auto count_reads_right = size_t{0};
     auto count_writes = size_t{0};
@@ -383,7 +448,7 @@ class MultiwayMerger {
 
   static NodeIndex _parent(NodeIndex node) { return node / 2; }
   static NodeIndex _left_child(NodeIndex node) { return 2 * node; }
-  static NodeIndex _right_child(NodeIndex node) { return 2 * node + 1; }
+  static NodeIndex _right_child(NodeIndex node) { return (2 * node) + 1; }
 
   // clang-format on
 
@@ -393,7 +458,7 @@ class MultiwayMerger {
   std::vector<bool> _done;
   size_t _total_output_size;
 
-  bool _finished = false;
+  std::atomic<bool> _finished{false};
 
   size_t _buffer_size{};
   size_t _read_threshold{};

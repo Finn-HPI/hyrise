@@ -9,6 +9,7 @@
 #include <boost/sort/sort.hpp>
 
 #include "hyrise.hpp"
+#include "operators/join_simd_sort_merge/util.hpp"
 #include "scheduler/abstract_task.hpp"
 #include "scheduler/job_task.hpp"
 #include "simd_utils.hpp"
@@ -114,6 +115,7 @@ inline std::size_t __attribute__((always_inline)) parallel_merge_chunk_list(std:
   const auto last_chunk_index = chunk_count - 1;
 
   auto merge_tasks = std::vector<std::shared_ptr<AbstractTask>>{};
+  merge_tasks.reserve(last_chunk_index / 2);
 
   for (auto chunk_index = std::size_t{0}; chunk_index < last_chunk_index; chunk_index += 2) {
     const auto& chunk_info_a = chunk_list[chunk_index];
@@ -187,7 +189,8 @@ inline void __attribute__((always_inline)) sort_incomplete_chunk(DataChunk<T>& c
   chunk.output = merged_chunk.input;
 }
 
-template <std::size_t count_per_vector, typename T>
+template <std::size_t count_per_vector, typename T,
+          ExecutionStrategy execution_strategy = ExecutionStrategy::SEQUENTIAL>
 void sort(T*& input_ptr, T*& output_ptr, std::size_t element_count) {
   if (element_count <= 0) [[unlikely]] {
     return;
@@ -225,9 +228,15 @@ void sort(T*& input_ptr, T*& output_ptr, std::size_t element_count) {
   // Next we merge all these chunks iteratively to achieve a global sorting.
   const auto log_n = static_cast<std::size_t>(std::ceil(std::log2(element_count)));
   const auto log_block_size = log2_builtin(BLOCK_SIZE);
+
   for (auto level_index = log_block_size; level_index < log_n; ++level_index) {
-    chunk_count = merge_chunk_list<count_per_vector>(chunk_list, chunk_count);
+    if constexpr (execution_strategy == ExecutionStrategy::PARALLEL) {
+      chunk_count = parallel_merge_chunk_list<count_per_vector>(chunk_list, chunk_count);
+    } else {
+      chunk_count = merge_chunk_list<count_per_vector>(chunk_list, chunk_count);
+    }
   }
+
   auto& merged_chunk = chunk_list.front();
   output_ptr = merged_chunk.input;
   input_ptr = merged_chunk.output;
