@@ -40,7 +40,9 @@ class KWayMerge {
         });
 
     auto output = simd_sort::simd_vector<SimdElement>();
-    output.reserve(total_output_size);
+    output.resize(total_output_size);
+
+    auto* output_begin = output.data();
 
     auto cmp = [](const auto& lhs, const auto& rhs) {
       return *(lhs.first) > *(rhs.first);
@@ -52,7 +54,8 @@ class KWayMerge {
       auto [current_iterator, end] = leaf_nodes.back();
       leaf_nodes.pop_back();
 
-      output.push_back(*reinterpret_cast<SimdElement*>(current_iterator));
+      *output_begin = *reinterpret_cast<SimdElement*>(current_iterator);
+      ++output_begin;
 
       if (++current_iterator != end) {
         leaf_nodes.emplace_back(current_iterator, end);
