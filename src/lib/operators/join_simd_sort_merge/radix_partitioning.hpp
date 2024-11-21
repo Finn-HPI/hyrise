@@ -122,6 +122,9 @@ struct RadixPartition {
 #if defined(__AVX512F__)
     using Vec = simd_sort::Vec<64, int64_t>;  // 512-bit Vector.
     nontemporal_store_vec.template operator()<Vec>(reinterpret_cast<Vec*>(source), reinterpret_cast<Vec*>(destination));
+#elif defined(__powerpc__) || defined(__ppc__) || defined(__PPC__)
+    using Vec = simd_sort::Vec<128, int64_t>;  // 1024-bit Vector.
+    nontemporal_store_vec.template operator()<Vec>(reinterpret_cast<Vec*>(source), reinterpret_cast<Vec*>(destination));
 #else
     using Vec = simd_sort::Vec<32, int64_t>;  // 256-bit Vector.
     nontemporal_store_vec.template operator()<Vec>(reinterpret_cast<Vec*>(source), reinterpret_cast<Vec*>(destination));
