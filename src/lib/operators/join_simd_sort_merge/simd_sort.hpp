@@ -214,11 +214,28 @@ void sort(T*& input_ptr, T*& output_ptr, std::size_t element_count) {
 
   // We then call our local sort routine for each block.
   const auto chunk_count_without_remaining = chunk_count - (remaining_items > 0);
-  for (auto chunk_index = std::size_t{0}; chunk_index < chunk_count_without_remaining; ++chunk_index) {
-    auto& chunk = chunk_list[chunk_index];
-    sort_chunk<count_per_vector>(chunk);
-    std::swap(chunk.input, chunk.output);
+  if constexpr (execution_strategy == ExecutionStrategy::PARALLEL) {
+    auto sort_tasks = std::vector<std::shared_ptr<AbstractTask>>{};
+    sort_tasks.reserve(chunk_count_without_remaining);
+
+    for (auto chunk_index = std::size_t{0}; chunk_index < chunk_count_without_remaining; ++chunk_index) {
+      sort_tasks.push_back(std::make_shared<JobTask>([&, chunk_index]() {
+        auto& chunk = chunk_list[chunk_index];
+        sort_chunk<count_per_vector>(chunk);
+        std::swap(chunk.input, chunk.output);
+      }));
+    }
+
+    Hyrise::get().scheduler()->schedule_and_wait_for_tasks(sort_tasks);
+
+  } else {
+    for (auto chunk_index = std::size_t{0}; chunk_index < chunk_count_without_remaining; ++chunk_index) {
+      auto& chunk = chunk_list[chunk_index];
+      sort_chunk<count_per_vector>(chunk);
+      std::swap(chunk.input, chunk.output);
+    }
   }
+
   if (remaining_items) {
     auto& chunk = chunk_list.back();
     chunk.size = remaining_items;
