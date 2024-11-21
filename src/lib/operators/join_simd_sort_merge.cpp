@@ -283,7 +283,7 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
 
   // NOLINTEND(cppcoreguidelines-avoid-const-or-ref-data-members)
 
-  enum class CompareResult { Less, Greater, Equal };
+  enum class CompareResult : std::uint8_t { Less, Greater, Equal };
 
   struct RowHasher {
     size_t operator()(const RowID& row) const {
@@ -818,9 +818,9 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
 
  public:
   std::shared_ptr<const Table> _on_execute() override {
-#if HYRISE_DEBUG
+    // if constexpr (HYRISE_DEBUG) {
     std::cout << "Execute JoinSimdSortMerge: cluster_count: " << _cluster_count << std::endl;
-#endif
+    // }
 
     const auto include_null_left = (_mode == JoinMode::Left || _mode == JoinMode::FullOuter);
     const auto include_null_right = (_mode == JoinMode::Right || _mode == JoinMode::FullOuter);
