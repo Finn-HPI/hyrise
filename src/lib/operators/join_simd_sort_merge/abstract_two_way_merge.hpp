@@ -235,6 +235,95 @@ class AbstractTwoWayMerge {
   }
 
   template <std::size_t kernel_size>
+  static inline void __attribute__((always_inline)) merge_variable_length_unaligned(T* a_address, T* b_address,
+                                                                                    T* output_address,
+                                                                                    const std::size_t a_length,
+                                                                                    const std::size_t b_length) {
+    using block_t = struct alignas(kernel_size * sizeof(T)) {};
+
+    static constexpr auto VECTOR_COUNT = kernel_size / count_per_vector;
+    static constexpr auto MERGE_NETWORK_INPUT_SIZE = VECTOR_COUNT * 2;
+
+    using MultiVecType = MultiVec<VECTOR_COUNT, count_per_vector, VecType>;
+    using BitonicMergeNetwork = BitonicMergeNetwork<MERGE_NETWORK_INPUT_SIZE, MultiVecType>;
+    constexpr auto ALIGNMENT_BIT_MASK = get_alignment_bitmask<kernel_size>();
+
+    const auto a_rounded_length = a_length & ALIGNMENT_BIT_MASK;
+    const auto b_rounded_length = b_length & ALIGNMENT_BIT_MASK;
+
+    auto a_index = std::size_t{0};
+    auto b_index = std::size_t{0};
+
+    auto& out = output_address;
+
+    if (a_rounded_length > kernel_size && b_rounded_length > kernel_size) {
+      auto* a_pointer = reinterpret_cast<block_t*>(a_address);
+      auto* b_pointer = reinterpret_cast<block_t*>(b_address);
+      auto* const a_end = reinterpret_cast<block_t*>(a_address + a_length) - 1;
+      auto* const b_end = reinterpret_cast<block_t*>(b_address + b_length) - 1;
+
+      auto* output_pointer = reinterpret_cast<block_t*>(out);
+      auto* next_pointer = b_pointer;
+
+      auto a_input = MultiVecType{};
+      auto b_input = MultiVecType{};
+      auto lower_merge_output = MultiVecType{};
+      auto upper_merge_output = MultiVecType{};
+      a_input.loadu(reinterpret_cast<T*>(a_pointer));
+      b_input.loadu(reinterpret_cast<T*>(b_pointer));
+      ++a_pointer;
+      ++b_pointer;
+
+      BitonicMergeNetwork::merge(a_input, b_input, lower_merge_output, upper_merge_output);
+      lower_merge_output.storeu(reinterpret_cast<T*>(output_pointer));
+      ++output_pointer;
+
+      // As long as both A and B are not empty, do fetch and 2x4 merge.
+      while (a_pointer < a_end && b_pointer < b_end) {
+        choose_next_and_update_pointers<block_t, T>(next_pointer, a_pointer, b_pointer);
+        a_input = upper_merge_output;
+        b_input.loadu(reinterpret_cast<T*>(next_pointer));
+        BitonicMergeNetwork::merge(a_input, b_input, lower_merge_output, upper_merge_output);
+        lower_merge_output.storeu(reinterpret_cast<T*>(output_pointer));
+        ++output_pointer;
+      }
+
+      const auto last_element_from_merge_output = upper_merge_output.last()[count_per_vector - 1];
+      if (last_element_from_merge_output <= *reinterpret_cast<T*>(a_pointer)) {
+        --a_pointer;
+        upper_merge_output.storeu(reinterpret_cast<T*>(a_pointer));
+      } else {
+        --b_pointer;
+        upper_merge_output.storeu(reinterpret_cast<T*>(b_pointer));
+      }
+
+      a_index = reinterpret_cast<T*>(a_pointer) - a_address;
+      b_index = reinterpret_cast<T*>(b_pointer) - b_address;
+      a_address = reinterpret_cast<T*>(a_pointer);
+      b_address = reinterpret_cast<T*>(b_pointer);
+      out = reinterpret_cast<T*>(output_pointer);
+    }
+    // Serial Merge.
+    while (a_index < a_length && b_index < b_length) {
+      auto* next = b_address;
+      const auto cmp = *a_address < *b_address;
+      const auto cmp_neg = !cmp;
+      a_index += cmp;
+      b_index += cmp_neg;
+      next = cmp ? a_address : b_address;
+      *out = *next;
+      ++out;
+      a_address += cmp;
+      b_address += cmp_neg;
+    }
+    const auto a_copy_length = a_length - a_index;
+    simd_copy<count_per_vector>(out, a_address, a_copy_length);
+    out += a_copy_length;
+    const auto b_copy_length = b_length - b_index;
+    simd_copy<count_per_vector>(out, b_address, b_copy_length);
+  }
+
+  template <std::size_t kernel_size>
   static inline void __attribute__((always_inline)) merge_multiway_merge_nodes(
       T* a_address, T* b_address, T* output_address, std::size_t& count_reads_a, std::size_t& count_reads_b,
       std::size_t& count_writes, const std::size_t a_length, const std::size_t b_length,

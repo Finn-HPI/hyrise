@@ -1,35 +1,34 @@
 #pragma once
 
 #include <algorithm>
-#include <iostream>
 #include <memory>
-#include <numeric>
 #include <span>
 #include <vector>
 
 #include "hyrise.hpp"
-#include "operators/join_simd_sort_merge/simd_utils.hpp"
+#include "operators/join_simd_sort_merge/two_way_merge.hpp"
 #include "scheduler/abstract_task.hpp"
 #include "scheduler/job_task.hpp"
 
 namespace hyrise::merge_path {
-template <typename T>
+template <size_t count_per_vector, typename T>
 class MergePath {
   using IntersectionPoint = std::pair<int64_t, int64_t>;
+  using TwoWayMerge = simd_sort::TwoWayMerge<count_per_vector, T>;
 
  public:
-  MergePath(std::span<T> input_a, std::span<T> input_b, size_t partition_count)
+  MergePath(std::span<T> input_a, std::span<T> input_b, const size_t partition_count)
       : _input_a(std::move(input_a)),
         _input_b(std::move(input_b)),
         _partition_count(partition_count),
         _diagonal_intersection_points(partition_count + 1) {}
 
-  void merge_path(std::span<T> input_a, std::span<T> input_b, std::span<T> output) {
-    const auto count_a = input_a.size();
-    const auto count_b = input_b.size();
+  void merge(std::span<T> output) {
+    const auto count_a = _input_a.size();
+    const auto count_b = _input_b.size();
 
     if (_partition_count <= 1) {
-      merge(input_a, input_b, output);
+      _merge_section_aligned(_input_a, _input_b, output);
       return;
     }
 
@@ -46,7 +45,7 @@ class MergePath {
     for (auto partition_index = size_t{0}; partition_index < _partition_count; ++partition_index) {
       tasks.push_back(std::make_shared<JobTask>([&, partition_index]() {
         intersection_points[partition_index + 1] =
-            std::move(_find_intersection_point(partition_index, input_a, input_b));
+            std::move(_find_intersection_point(partition_index, _input_a, _input_b));
       }));
     }
 
@@ -65,14 +64,16 @@ class MergePath {
         auto length_a_section = a_start <= a_end ? a_end + 1 - a_start : 0;
         auto length_b_section = b_start <= b_end ? b_end + 1 - b_start : 0;
 
-        const size_t output_offset = static_cast<double>(partition_index) * combined_size / _partition_count;
+        const auto output_offset =
+            static_cast<size_t>(static_cast<double>(partition_index) * static_cast<double>(combined_size) /
+                                static_cast<double>(_partition_count));
 
-        auto a_section = std::span<T>(input_a.begin() + a_start, length_a_section);
-        auto b_section = std::span<T>(input_b.begin() + b_start, length_b_section);
+        auto a_section = std::span<T>(_input_a.begin() + a_start, length_a_section);
+        auto b_section = std::span<T>(_input_b.begin() + b_start, length_b_section);
 
         auto out_section = std::span(output.begin() + output_offset, length_a_section + length_b_section);
 
-        _merge_section(std::move(a_section), std::move(b_section), std::move(out_section));
+        _merge_section_unaligned(std::move(a_section), std::move(b_section), std::move(out_section));
       }));
     }
 
@@ -81,13 +82,20 @@ class MergePath {
 
  private:
   std::span<T> _input_a;
+
   std::span<T> _input_b;
   size_t _partition_count;
 
   std::vector<IntersectionPoint> _diagonal_intersection_points;
 
-  void _merge_section(std::span<T> input_a, std::span<T> input_b, std::span<T> output) {
-    std::ranges::merge(input_a, input_b, output.begin());
+  void _merge_section_aligned(std::span<T> input_a, std::span<T> input_b, std::span<T> output) {
+    TwoWayMerge::template merge_variable_length<count_per_vector * 4>(input_a.data(), input_b.data(), output.data(),
+                                                                      input_a.size(), input_b.size());
+  }
+
+  void _merge_section_unaligned(std::span<T> input_a, std::span<T> input_b, std::span<T> output) {
+    TwoWayMerge::template merge_variable_length_unaligned<count_per_vector * 4>(
+        input_a.data(), input_b.data(), output.data(), input_a.size(), input_b.size());
   }
 
   IntersectionPoint _find_intersection_point(size_t thread_index, std::span<T> input_a, std::span<T> input_b) {
@@ -98,7 +106,10 @@ class MergePath {
       return {count_a - 1, count_b - 1};
     }
 
-    const int64_t diagonal = (static_cast<double>(thread_index + 1) * (count_a + count_b) / _partition_count) - 1;
+    const auto diagonal =
+        static_cast<int64_t>((static_cast<double>(thread_index + 1) * static_cast<double>(count_a + count_b) /
+                              static_cast<double>(_partition_count)) -
+                             1);
 
     int64_t a_top = diagonal > count_a ? count_a : diagonal;
     int64_t b_top = diagonal > count_a ? diagonal - count_a : int64_t{0};
