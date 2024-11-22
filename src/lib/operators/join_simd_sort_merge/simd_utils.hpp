@@ -11,7 +11,7 @@
 #include <boost/align/aligned_allocator.hpp>
 
 #ifndef L2_CACHE_SIZE
-#define L2_CACHE_SIZE 262144  // Default value (256KiB)
+#define L2_CACHE_SIZE 1048576  // Default value (1024KiB)
 #endif
 
 namespace hyrise::simd_sort {
@@ -244,8 +244,8 @@ struct SortingNetwork<4, T> {
 
     auto row_0 = load_aligned<VecType>(data);
     auto row_1 = load_aligned<VecType>(data + COUNT_PER_VECTOR);
-    auto row_2 = load_aligned<VecType>(data + 2 * COUNT_PER_VECTOR);
-    auto row_3 = load_aligned<VecType>(data + 3 * COUNT_PER_VECTOR);
+    auto row_2 = load_aligned<VecType>(data + (2 * COUNT_PER_VECTOR));
+    auto row_3 = load_aligned<VecType>(data + (3 * COUNT_PER_VECTOR));
 
     // Level 1 comparisons.
     compare_min_max(row_0, row_2);
@@ -269,8 +269,8 @@ struct SortingNetwork<4, T> {
     // Write to output
     store_aligned(row_0, output);
     store_aligned(row_1, output + COUNT_PER_VECTOR);
-    store_aligned(row_2, output + 2 * COUNT_PER_VECTOR);
-    store_aligned(row_3, output + 3 * COUNT_PER_VECTOR);
+    store_aligned(row_2, output + (2 * COUNT_PER_VECTOR));
+    store_aligned(row_3, output + (3 * COUNT_PER_VECTOR));
   }
 };
 

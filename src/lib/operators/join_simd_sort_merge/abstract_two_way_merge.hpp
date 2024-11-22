@@ -16,9 +16,9 @@ class AbstractTwoWayMerge {
 
   // NOLINTBEGIN(cppcoreguidelines-pro-type-vararg, hicpp-vararg)
  public:
-  static inline void __attribute__((always_inline)) merge_2x_base_size(VecType& in11, VecType& in12, VecType& in21,
-                                                                       VecType& in22, VecType& out1, VecType& out2,
-                                                                       VecType& out3, VecType& out4) {
+  static void __attribute__((always_inline)) merge_2x_base_size(VecType& in11, VecType& in12, VecType& in21,
+                                                                VecType& in22, VecType& out1, VecType& out2,
+                                                                VecType& out3, VecType& out4) {
     auto l11 = __builtin_elementwise_min(in11, in21);
     auto l12 = __builtin_elementwise_min(in12, in22);
     auto h11 = __builtin_elementwise_max(in11, in21);
@@ -29,16 +29,16 @@ class AbstractTwoWayMerge {
 
   template <std::size_t input_count, typename MulitVecType>
   struct BitonicMergeNetwork {
-    static inline void __attribute__((always_inline)) merge(MulitVecType& /*in1*/, MulitVecType& /*in2*/,
-                                                            MulitVecType& /*out1*/, MulitVecType& /*out2*/) {
+    static void __attribute__((always_inline)) merge(MulitVecType& /*in1*/, MulitVecType& /*in2*/,
+                                                     MulitVecType& /*out1*/, MulitVecType& /*out2*/) {
       static_assert(false, "Not implemented.");
     }
   };
 
   template <typename MultiVecType>
   struct BitonicMergeNetwork<MERGE_AB, MultiVecType> {
-    static inline void __attribute__((always_inline)) merge(MultiVecType& in1, MultiVecType& in2, MultiVecType& out1,
-                                                            MultiVecType& out2) {
+    static void __attribute__((always_inline)) merge(MultiVecType& in1, MultiVecType& in2, MultiVecType& out1,
+                                                     MultiVecType& out2) {
       Derived::reverse(in2.a);
       Derived::merge_base_size(in1.a, in2.a, out1.a, out2.a);
     }
@@ -46,8 +46,8 @@ class AbstractTwoWayMerge {
 
   template <typename MultiVecType>
   struct BitonicMergeNetwork<MERGE_2AB, MultiVecType> {
-    static inline void __attribute__((always_inline)) merge(MultiVecType& in1, MultiVecType& in2, MultiVecType& out1,
-                                                            MultiVecType& out2) {
+    static void __attribute__((always_inline)) merge(MultiVecType& in1, MultiVecType& in2, MultiVecType& out1,
+                                                     MultiVecType& out2) {
       Derived::reverse(in2.a);
       Derived::reverse(in2.b);
       auto l11 = __builtin_elementwise_min(in1.a, in2.b);
@@ -61,8 +61,8 @@ class AbstractTwoWayMerge {
 
   template <typename MultiVecType>
   struct BitonicMergeNetwork<MERGE_4AB, MultiVecType> {
-    static inline void __attribute__((always_inline)) merge(MultiVecType& in1, MultiVecType& in2, MultiVecType& out1,
-                                                            MultiVecType& out2) {
+    static void __attribute__((always_inline)) merge(MultiVecType& in1, MultiVecType& in2, MultiVecType& out1,
+                                                     MultiVecType& out2) {
       Derived::reverse(in2.a);
       Derived::reverse(in2.b);
       Derived::reverse(in2.c);
@@ -83,9 +83,8 @@ class AbstractTwoWayMerge {
   // NOLINTEND(cppcoreguidelines-pro-type-vararg, hicpp-vararg)
 
   template <std::size_t kernel_size>
-  static inline void __attribute__((always_inline)) merge_equal_length(T* const a_address, T* const b_address,
-                                                                       T* const output_address,
-                                                                       const std::size_t length) {
+  static void __attribute__((always_inline)) merge_equal_length(T* const a_address, T* const b_address,
+                                                                T* const output_address, const std::size_t length) {
     using block_t = struct alignas(kernel_size * sizeof(T)) {};
 
     static constexpr auto VECTOR_COUNT = kernel_size / count_per_vector;
@@ -147,9 +146,9 @@ class AbstractTwoWayMerge {
 
   // Hint: this function has sideeffects on the input of a and b.
   template <std::size_t kernel_size>
-  static inline void __attribute__((always_inline)) merge_variable_length(T* a_address, T* b_address, T* output_address,
-                                                                          const std::size_t a_length,
-                                                                          const std::size_t b_length) {
+  static void __attribute__((always_inline)) merge_variable_length(T* a_address, T* b_address, T* output_address,
+                                                                   const std::size_t a_length,
+                                                                   const std::size_t b_length) {
     using block_t = struct alignas(kernel_size * sizeof(T)) {};
 
     static constexpr auto VECTOR_COUNT = kernel_size / count_per_vector;
@@ -235,10 +234,10 @@ class AbstractTwoWayMerge {
   }
 
   template <std::size_t kernel_size>
-  static inline void __attribute__((always_inline)) merge_variable_length_unaligned(T* a_address, T* b_address,
-                                                                                    T* output_address,
-                                                                                    const std::size_t a_length,
-                                                                                    const std::size_t b_length) {
+  static void __attribute__((always_inline)) merge_variable_length_unaligned(T* a_address, T* b_address,
+                                                                             T* output_address,
+                                                                             const std::size_t a_length,
+                                                                             const std::size_t b_length) {
     using block_t = struct alignas(kernel_size * sizeof(T)) {};
 
     static constexpr auto VECTOR_COUNT = kernel_size / count_per_vector;
@@ -324,7 +323,7 @@ class AbstractTwoWayMerge {
   }
 
   template <std::size_t kernel_size>
-  static inline void __attribute__((always_inline)) merge_multiway_merge_nodes(
+  static void __attribute__((always_inline)) merge_multiway_merge_nodes(
       T* a_address, T* b_address, T* output_address, std::size_t& count_reads_a, std::size_t& count_reads_b,
       std::size_t& count_writes, const std::size_t a_length, const std::size_t b_length,
       const std::size_t output_size) {

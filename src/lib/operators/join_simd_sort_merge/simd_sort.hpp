@@ -9,6 +9,7 @@
 #include <boost/sort/sort.hpp>
 
 #include "hyrise.hpp"
+#include "operators/join_simd_sort_merge/merge_path.hpp"
 #include "operators/join_simd_sort_merge/util.hpp"
 #include "scheduler/abstract_task.hpp"
 #include "scheduler/job_task.hpp"
@@ -138,6 +139,110 @@ inline std::size_t __attribute__((always_inline)) parallel_merge_chunk_list(std:
     ++updated_chunk_count;
   }
   return updated_chunk_count;
+}
+
+template <size_t count_per_vector, typename T>
+simd_sort::DataChunk<T> merge_recursive(std::span<simd_sort::DataChunk<T>> chunks) {
+  if (chunks.empty()) {
+    return {nullptr, nullptr, 0};
+  }
+
+  if (chunks.size() == 1) {
+    return chunks[0];
+  }
+
+  const auto half_size = chunks.size() / 2;
+  auto lhs = std::span(chunks.begin(), half_size);
+  auto rhs = std::span(chunks.begin() + half_size, chunks.end());
+
+  auto tasks = std::vector<std::shared_ptr<AbstractTask>>{};
+  tasks.reserve(2);
+
+  auto chunk_info_lhs = simd_sort::DataChunk<T>{};
+  auto chunk_info_rhs = simd_sort::DataChunk<T>{};
+
+  tasks.emplace_back(std::make_shared<JobTask>([&]() {
+    chunk_info_lhs = std::move(merge_recursive<count_per_vector, T>(lhs));
+  }));
+  tasks.emplace_back(std::make_shared<JobTask>([&]() {
+    chunk_info_rhs = std::move(merge_recursive<count_per_vector, T>(rhs));
+  }));
+
+  Hyrise::get().scheduler()->schedule_and_wait_for_tasks(tasks);
+
+  using TwoWayMerge = hyrise::simd_sort::TwoWayMerge<count_per_vector, T>;
+  TwoWayMerge::template merge_variable_length<count_per_vector * 4>(
+      chunk_info_lhs.input, chunk_info_rhs.input, chunk_info_lhs.output, chunk_info_lhs.size, chunk_info_rhs.size);
+
+  return {chunk_info_lhs.output, chunk_info_lhs.input, chunk_info_lhs.size + chunk_info_rhs.size};
+}
+
+template <size_t count_per_vector, typename T>
+simd_sort::DataChunk<T> merge_recursive_with_merge_path(std::span<simd_sort::DataChunk<T>> chunks,
+                                                        size_t last_skip_level, size_t cores, size_t level = 1) {
+  if (chunks.empty()) {
+    return {nullptr, nullptr, 0};
+  }
+
+  if (chunks.size() == 1) {
+    return chunks[0];
+  }
+
+  const auto half_size = chunks.size() / 2;
+  auto lhs = std::span(chunks.begin(), half_size);
+  auto rhs = std::span(chunks.begin() + half_size, chunks.end());
+
+  auto tasks = std::vector<std::shared_ptr<AbstractTask>>{};
+  tasks.reserve(2);
+
+  auto chunk_info_lhs = simd_sort::DataChunk<T>{};
+  auto chunk_info_rhs = simd_sort::DataChunk<T>{};
+
+  tasks.emplace_back(std::make_shared<JobTask>([&]() {
+    chunk_info_lhs =
+        std::move(merge_recursive_with_merge_path<count_per_vector, T>(lhs, last_skip_level, cores, level + 1));
+  }));
+  tasks.emplace_back(std::make_shared<JobTask>([&]() {
+    chunk_info_rhs =
+        std::move(merge_recursive_with_merge_path<count_per_vector, T>(rhs, last_skip_level, cores, level + 1));
+  }));
+
+  Hyrise::get().scheduler()->schedule_and_wait_for_tasks(tasks);
+
+  // Use MergePath.
+  if (level <= last_skip_level) {
+    auto input_lhs = std::span(chunk_info_lhs.input, chunk_info_lhs.size);
+    auto input_rhs = std::span(chunk_info_rhs.input, chunk_info_lhs.size);
+    auto output = std::span(chunk_info_lhs.output, chunk_info_lhs.size + chunk_info_rhs.size);
+
+    const auto num_partitions = cores / level;
+
+    auto merge_path = merge_path::MergePath<count_per_vector, T>(input_lhs, input_rhs, num_partitions);
+    merge_path.merge(output);
+
+    return {chunk_info_lhs.output, chunk_info_lhs.input, chunk_info_lhs.size + chunk_info_rhs.size};
+  }
+
+  using TwoWayMerge = hyrise::simd_sort::TwoWayMerge<count_per_vector, T>;
+  TwoWayMerge::template merge_variable_length<count_per_vector * 4>(
+      chunk_info_lhs.input, chunk_info_rhs.input, chunk_info_lhs.output, chunk_info_lhs.size, chunk_info_rhs.size);
+
+  return {chunk_info_lhs.output, chunk_info_lhs.input, chunk_info_lhs.size + chunk_info_rhs.size};
+}
+
+template <size_t count_per_vector, bool use_merge_path = true, typename T>
+T* simd_merge_parallel(std::vector<simd_sort::DataChunk<T>>& chunk_list, size_t core_count) {
+  const auto merge_path_end_level = simd_sort::log2_builtin(std::bit_floor(core_count));
+
+  if (!use_merge_path || !merge_path_end_level) {
+    const auto final_chunk = std::move(merge_recursive<count_per_vector, T>(chunk_list));
+    return final_chunk.input;
+  }
+
+  // Use recursive SIMD merging with MergePath on the last levels.
+  const auto final_chunk =
+      std::move(merge_recursive_with_merge_path<count_per_vector, T>(chunk_list, merge_path_end_level, core_count));
+  return final_chunk.input;
 }
 
 template <std::size_t count_per_vector, typename T>
