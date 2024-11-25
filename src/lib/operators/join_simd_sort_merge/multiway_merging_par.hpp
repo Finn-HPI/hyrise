@@ -144,10 +144,9 @@ class ParMultiwayMerger {
 
     // Setup buffers for innner nodes.
     constexpr auto CACHE_USAGE = 0.9;
-    constexpr auto L3_CACHE_SIZE = 16 * 1024 * 1024;  // 16MiB
-    constexpr auto AVAILABLE_L3_CACHE = static_cast<size_t>(L3_CACHE_SIZE * CACHE_USAGE);
+    constexpr auto AVAILABLE_L2_CACHE = static_cast<size_t>(L2_CACHE_SIZE * CACHE_USAGE);
 
-    _buffer_size = (AVAILABLE_L3_CACHE / sizeof(SimdElement)) / count_non_done_inner_nodes;
+    _buffer_size = ((AVAILABLE_L2_CACHE * 2) / sizeof(SimdElement)) / count_non_done_inner_nodes;
     _read_threshold = _buffer_size / 2;
 
     _fifo_buffer.resize(count_non_done_inner_nodes * _buffer_size);

@@ -73,19 +73,20 @@ void visualize(const std::string& prefix, std::shared_ptr<AbstractOperator> join
 
 template <class C>
 void bm_join_impl(benchmark::State& state, std::shared_ptr<TableWrapper> table_wrapper_left,
-                  std::shared_ptr<TableWrapper> table_wrapper_right, std::string& prefix) {
+                  std::shared_ptr<TableWrapper> table_wrapper_right, std::string& prefix [[maybe_unused]]) {
   clear_cache();
 
   auto warm_up = std::make_shared<C>(table_wrapper_left, table_wrapper_right, JoinMode::Inner,
                                      OperatorJoinPredicate{{ColumnID{0}, ColumnID{0}}, PredicateCondition::Equals});
   warm_up->execute();
   auto index = 0;
-  for (auto _ : state) {
+  auto name = prefix + "_" + warm_up->name();
+  for (auto _ : state) {  // NOLINT
     auto join = std::make_shared<C>(table_wrapper_left, table_wrapper_right, JoinMode::Inner,
                                     OperatorJoinPredicate{{ColumnID{0}, ColumnID{0}}, PredicateCondition::Equals});
     join->execute();
-    auto name = prefix + "_" + std::to_string(index) + "_";
-    visualize(prefix, join);
+    auto final_prefix = name + "_" + std::to_string(index) + "_";
+    visualize(final_prefix, join);
     ++index;
   }
 
@@ -121,9 +122,9 @@ void BM_Join_MediumAndMedium(benchmark::State& state) {  // NOLINT 100,000 x 100
 
 BENCHMARK_TEMPLATE(BM_Join_SmallAndSmall, JoinNestedLoop);
 
-BENCHMARK_TEMPLATE(BM_Join_SmallAndSmall, JoinIndex);
-BENCHMARK_TEMPLATE(BM_Join_SmallAndBig, JoinIndex);
-BENCHMARK_TEMPLATE(BM_Join_MediumAndMedium, JoinIndex);
+// BENCHMARK_TEMPLATE(BM_Join_SmallAndSmall, JoinIndex);
+// BENCHMARK_TEMPLATE(BM_Join_SmallAndBig, JoinIndex);
+// BENCHMARK_TEMPLATE(BM_Join_MediumAndMedium, JoinIndex);
 
 BENCHMARK_TEMPLATE(BM_Join_SmallAndSmall, JoinHash);
 BENCHMARK_TEMPLATE(BM_Join_SmallAndBig, JoinHash);

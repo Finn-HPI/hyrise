@@ -18,6 +18,11 @@ add_executable(
 )
 
 add_executable(
+    hyriseSIMDMergeTest
+    simd_sort_test.cpp
+)
+
+add_executable(
     hyriseBenchmarkSIMDMerge
     merge_benchmark.cpp
 )
@@ -35,6 +40,12 @@ target_link_libraries(
 
 target_link_libraries(
     hyriseBenchmarkPartitioning
+    hyrise
+    hyriseBenchmarkLib
+)
+
+target_link_libraries(
+    hyriseSIMDMergeTest
     hyrise
     hyriseBenchmarkLib
 )
