@@ -21,6 +21,7 @@
 #include <algorithm>
 #include <iterator>
 #include <limits>
+#include <optional>
 #include <span>
 #include <utility>
 
@@ -39,22 +40,22 @@ concept RequiresTwoParameters = requires(Callable callable) {
 
 template <typename T>
 struct Data32BitCompression {
-  static inline uint32_t compress(T& value [[maybe_unused]], const T& min_value [[maybe_unused]],
-                                  const T& max_value [[maybe_unused]]) {
+  static uint32_t compress(T& value [[maybe_unused]], const T& min_value [[maybe_unused]],
+                           const T& max_value [[maybe_unused]]) {
     static_assert(false, "Not implemented");
   }
 };
 
 template <FourByteType T>
 struct Data32BitCompression<T> {
-  static inline uint32_t compress(T value, const T& min_value [[maybe_unused]], const T& max_value [[maybe_unused]]) {
+  static uint32_t compress(T value, const T& min_value [[maybe_unused]], const T& max_value [[maybe_unused]]) {
     return std::bit_cast<uint32_t>(value);
   }
 };
 
 template <>
 struct Data32BitCompression<double> {
-  static inline uint32_t compress(double& value, const double& /*min_value*/, const double& /*max_value*/) {
+  static uint32_t compress(double& value, const double& /*min_value*/, const double& /*max_value*/) {
     auto unsigned_value = std::bit_cast<uint64_t>(value);
     const auto high = static_cast<uint32_t>(unsigned_value >> 32u);
     const auto low = static_cast<uint32_t>(unsigned_value);
@@ -68,7 +69,7 @@ struct Data32BitCompression<double> {
 
 template <>
 struct Data32BitCompression<int64_t> {
-  static inline uint32_t compress(int64_t& value, const int64_t& min_value, const int64_t& max_value) {
+  static uint32_t compress(int64_t& value, const int64_t& min_value, const int64_t& max_value) {
     static constexpr auto MAX_ALLOWED_DIFFERENCE = std::numeric_limits<uint32_t>::max();
     if (max_value - min_value <= MAX_ALLOWED_DIFFERENCE) {
       return Data32BitCompression<uint32_t>::compress(value - min_value, 0, max_value - min_value);
@@ -86,8 +87,8 @@ struct Data32BitCompression<int64_t> {
 
 template <>
 struct Data32BitCompression<hyrise::pmr_string> {
-  static inline uint32_t compress(hyrise::pmr_string& value, const hyrise::pmr_string& min_value [[maybe_unused]],
-                                  const hyrise::pmr_string& max_value [[maybe_unused]]) {
+  static uint32_t compress(hyrise::pmr_string& value, const hyrise::pmr_string& min_value [[maybe_unused]],
+                           const hyrise::pmr_string& max_value [[maybe_unused]]) {
     auto key = uint32_t{0};
     const auto string_length = value.length();
     for (auto index = std::size_t{0}; index < string_length; index++) {
@@ -259,6 +260,11 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
   RowIDPosList _row_ids_left;
   RowIDPosList _row_ids_right;
 
+  std::vector<simd_sort::simd_vector<ColumnType>> _sorted_values_left;
+  std::vector<simd_sort::simd_vector<ColumnType>> _sorted_values_right;
+  std::vector<simd_sort::simd_vector<RowID>> _sorted_row_ids_left;
+  std::vector<simd_sort::simd_vector<RowID>> _sorted_row_ids_right;
+
   // Contains the null value row ids if a join column is an outer join column.
   RowIDPosList _null_rows_left;
   RowIDPosList _null_rows_right;
@@ -284,6 +290,8 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
   // NOLINTEND(cppcoreguidelines-avoid-const-or-ref-data-members)
 
   enum class CompareResult : std::uint8_t { Less, Greater, Equal };
+
+  static constexpr auto IS_LOSSLESS_COMPRESSION = sizeof(ColumnType) == 4 && !std::is_same_v<ColumnType, pmr_string>;
 
   struct RowHasher {
     size_t operator()(const RowID& row) const {
@@ -313,105 +321,55 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
   }
 
   struct PotentialMatchRange {
-    PotentialMatchRange(std::size_t init_start_index, std::size_t init_end_index, std::span<SimdElement> init_elements)
-        : start_index(init_start_index), end_index(init_end_index), elements(init_elements) {}
+    PotentialMatchRange(std::size_t init_start_index, std::size_t init_end_index, std::span<SimdElement> init_elements,
+                        std::span<ColumnType> init_values, std::span<RowID> init_row_ids)
+        : start_index(init_start_index),
+          end_index(init_end_index),
+          elements(init_elements),
+          values(init_values.data() + init_start_index, init_values.data() + init_end_index),
+          row_ids(init_row_ids.data() + init_start_index, init_row_ids.data() + init_end_index) {}
 
     std::size_t start_index;
     std::size_t end_index;
     std::span<SimdElement> elements;
-
-   private:
-#ifdef __AVX512F__
-    static constexpr auto GATHER_WIDTH = 16;
-#else
-    static constexpr auto GATHER_WIDTH = 8;
-#endif
-
-    auto __attribute__((always_inline)) _gather_indices(const int64_t* __restrict index_begin,
-                                                        const size_t length) const {
-      auto indices = std::array<uint32_t, GATHER_WIDTH>{};
-
-#pragma clang loop vectorize(enable) interleave(enable) unroll(disable)
-      for (auto index = size_t{0}; index < length; ++index) {
-        indices[index] = (std::bit_cast<uint64_t>(index_begin[index]) << 32u) >> 32u;
-      }
-      return indices;
-    }
-
-    template <typename T>
-    auto __attribute__((always_inline)) _gather_row_ids(const uint32_t* __restrict index_begin,
-                                                        const T* __restrict data, const size_t length) const {
-      auto loaded_data = std::array<T, GATHER_WIDTH>{};
-#pragma clang loop vectorize(enable) interleave(enable) unroll(disable)
-      for (auto index = size_t{0}; index < length; ++index) {
-        loaded_data[index] = data[index_begin[index]];
-      }
-      return loaded_data;
-    }
+    std::span<ColumnType> values;
+    std::span<RowID> row_ids;
 
    public:
     // Executes the given action for every row id of the table in this range.
-    void for_every_row_id(const std::vector<ColumnType>& materialized_values, const RowIDPosList& row_ids,
-                          auto&& action) const {
-      auto emit = [&](std::span<uint32_t> indices, std::span<RowID> row_ids) {
-        const auto num_elements = indices.size();
-        for (auto index = size_t{0}; index < num_elements; ++index) {
-          auto& row_id = row_ids[index];
-          if constexpr (requires { action(row_id); }) {
-            action(row_id);
-          } else {
-            const auto& value = materialized_values[indices[index]];
-            action(row_id, value);
-          }
+    void for_every_row_id(auto&& action) const {
+      const auto num_items = row_ids.size();
+      for (auto index = size_t{0}; index < num_items; ++index) {
+        DebugAssert(values.size() > index || IS_LOSSLESS_COMPRESSION, "Values has broken size.");
+        const auto& row_id = row_ids[index];
+        if constexpr (requires { action(row_id); }) {
+          action(row_id);
+        } else {
+          const auto& value = IS_LOSSLESS_COMPRESSION ? ColumnType{} : values[index];
+          action(row_id, value);
         }
-      };
-
-      auto index = start_index;
-      for (; index + GATHER_WIDTH < end_index; index += GATHER_WIDTH) {
-        auto indices = std::move(_gather_indices(reinterpret_cast<int64_t*>(&elements[index]), GATHER_WIDTH));
-        auto gathered_row_ids = std::move(_gather_row_ids<RowID>(indices.data(), row_ids.data(), GATHER_WIDTH));
-        emit(indices, gathered_row_ids);
-      }
-
-      // Handle remaining items.
-      if (index < end_index) {
-        const auto remaining_size = end_index - index;
-        auto indices = std::move(_gather_indices(reinterpret_cast<int64_t*>(&elements[index]), remaining_size));
-        auto gathered_row_ids = std::move(_gather_row_ids<RowID>(indices.data(), row_ids.data(), remaining_size));
-        emit(std::span(indices.begin(), remaining_size), std::span(gathered_row_ids.begin(), remaining_size));
       }
     }
 
-    // // Executes the given action for every row id of the table in this range.
-    // void for_every_row_id(const std::vector<ColumnType>& materialized_values, const RowIDPosList& row_ids,
-    //                       auto&& action) const {
-    //   for (auto index = start_index; index < end_index; ++index) {
-    //     const auto& element = elements[index];
-    //     const auto& row_id = row_ids[element.index];
-    //
-    //     if constexpr (requires { action(row_id); }) {
-    //       action(row_id);
-    //     } else {
-    //       const auto& value = materialized_values[element.index];
-    //       action(row_id, value);
-    //     }
-    //   }
-    // }
-
-    void find_matches_with_range(const PotentialMatchRange& other_range,
-                                 const std::vector<ColumnType>& materialized_values_left,
-                                 const std::vector<ColumnType>& materialized_values_right, RowIDPosList& row_ids_left,
-                                 RowIDPosList& row_ids_right, auto&& action) const {
-      this->for_every_row_id(
-          materialized_values_left, row_ids_left, [&](const RowID& left_row_id, const ColumnType& value_left) {
-            other_range.for_every_row_id(materialized_values_right, row_ids_right,
-                                         [&](const RowID& right_row_id, const ColumnType& value_right) {
-                                           if (value_left != value_right) {
-                                             return;
-                                           }
-                                           action(left_row_id, right_row_id);
-                                         });
+    void find_matches_with_range(const PotentialMatchRange& other_range, auto&& action) const {
+      // Handle float and int32_t values.
+      if constexpr (IS_LOSSLESS_COMPRESSION) {
+        this->for_every_row_id([&](const RowID& left_row_id) {
+          other_range.for_every_row_id([&](const RowID& right_row_id) {
+            action(left_row_id, right_row_id);
           });
+        });
+        return;
+      }
+      // Handle pmr_string values.
+      this->for_every_row_id([&](const RowID& left_row_id, const ColumnType& value_left) {
+        other_range.for_every_row_id([&](const RowID& right_row_id, const ColumnType& value_right) {
+          if (value_left != value_right) {
+            return;
+          }
+          action(left_row_id, right_row_id);
+        });
+      });
     }
   };
 
@@ -463,13 +421,11 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
   void _emit_combinations_multi_predicated_inner(const std::size_t bucket_index, const PotentialMatchRange left_range,
                                                  const PotentialMatchRange right_range,
                                                  MultiPredicateJoinEvaluator& multi_predicate_join_evaluator) {
-    left_range.find_matches_with_range(
-        right_range, _materialized_values_left, _materialized_values_right, _row_ids_left, _row_ids_right,
-        [&](const RowID& left_row_id, const RowID& right_row_id) {
-          if (multi_predicate_join_evaluator.satisfies_all_predicates(left_row_id, right_row_id)) {
-            _emit_combination(bucket_index, left_row_id, right_row_id);
-          }
-        });
+    left_range.find_matches_with_range(right_range, [&](const RowID& left_row_id, const RowID& right_row_id) {
+      if (multi_predicate_join_evaluator.satisfies_all_predicates(left_row_id, right_row_id)) {
+        _emit_combination(bucket_index, left_row_id, right_row_id);
+      }
+    });
   }
 
   // Only for multi predicated left outer joins.
@@ -482,21 +438,19 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
                                                       MultiPredicateJoinEvaluator& multi_predicate_join_evaluator) {
     DebugAssert(_primary_predicate_condition == PredicateCondition::Equals, "Primary predicate has to be Equals.");
 
-    left_range.for_every_row_id(
-        _materialized_values_left, _row_ids_left, [&](const RowID left_row_id, const ColumnType& left_value) {
-          auto left_row_id_matched = false;
-          right_range.for_every_row_id(
-              _materialized_values_right, _row_ids_right, [&](const RowID right_row_id, const ColumnType& right_value) {
-                if (multi_predicate_join_evaluator.satisfies_all_predicates(left_row_id, right_row_id) &&
-                    left_value == right_value) {
-                  _emit_combination(bucket_index, left_row_id, right_row_id);
-                  left_row_id_matched = true;
-                }
-              });
-          if (!left_row_id_matched) {
-            _emit_combination(bucket_index, left_row_id, NULL_ROW_ID);
-          }
-        });
+    left_range.for_every_row_id([&](const RowID left_row_id, const ColumnType& left_value) {
+      auto left_row_id_matched = false;
+      right_range.for_every_row_id([&](const RowID right_row_id, const ColumnType& right_value) {
+        if (multi_predicate_join_evaluator.satisfies_all_predicates(left_row_id, right_row_id) &&
+            left_value == right_value) {
+          _emit_combination(bucket_index, left_row_id, right_row_id);
+          left_row_id_matched = true;
+        }
+      });
+      if (!left_row_id_matched) {
+        _emit_combination(bucket_index, left_row_id, NULL_ROW_ID);
+      }
+    });
   }
 
   // Only for multi predicated right outer joins.
@@ -509,21 +463,19 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
                                                        MultiPredicateJoinEvaluator& multi_predicate_join_evaluator) {
     DebugAssert(_primary_predicate_condition == PredicateCondition::Equals, "Primary predicate has to be Equals.");
 
-    right_range.for_every_row_id(
-        _materialized_values_right, _row_ids_right, [&](const RowID right_row_id, const ColumnType& right_value) {
-          auto right_row_id_matched = false;
-          left_range.for_every_row_id(
-              _materialized_values_left, _row_ids_left, [&](const RowID left_row_id, const ColumnType& left_value) {
-                if (multi_predicate_join_evaluator.satisfies_all_predicates(left_row_id, right_row_id) &&
-                    left_value == right_value) {
-                  _emit_combination(bucket_index, left_row_id, right_row_id);
-                  right_row_id_matched = true;
-                }
-              });
-          if (!right_row_id_matched) {
-            _emit_combination(bucket_index, NULL_ROW_ID, right_row_id);
-          }
-        });
+    right_range.for_every_row_id([&](const RowID right_row_id, const ColumnType& right_value) {
+      auto right_row_id_matched = false;
+      left_range.for_every_row_id([&](const RowID left_row_id, const ColumnType& left_value) {
+        if (multi_predicate_join_evaluator.satisfies_all_predicates(left_row_id, right_row_id) &&
+            left_value == right_value) {
+          _emit_combination(bucket_index, left_row_id, right_row_id);
+          right_row_id_matched = true;
+        }
+      });
+      if (!right_row_id_matched) {
+        _emit_combination(bucket_index, NULL_ROW_ID, right_row_id);
+      }
+    });
   }
 
   // Only for multi-predicate full outer joins.
@@ -538,25 +490,23 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
     DebugAssert(_primary_predicate_condition == PredicateCondition::Equals, "Primary predicate has to be Equals.");
     auto matched_right_row_ids = RowHashSet{};
 
-    left_range.for_every_row_id(
-        _materialized_values_left, _row_ids_left, [&](const RowID left_row_id, const ColumnType& left_value) {
-          auto left_row_id_matched = false;
-          right_range.for_every_row_id(
-              _materialized_values_right, _row_ids_right, [&](const RowID right_row_id, const ColumnType& right_value) {
-                if (multi_predicate_join_evaluator.satisfies_all_predicates(left_row_id, right_row_id) &&
-                    left_value == right_value) {
-                  _emit_combination(bucket_index, left_row_id, right_row_id);
-                  left_row_id_matched = true;
-                  matched_right_row_ids.insert(right_row_id);
-                }
-              });
-          if (!left_row_id_matched) {
-            _emit_combination(bucket_index, left_row_id, NULL_ROW_ID);
-          }
-        });
+    left_range.for_every_row_id([&](const RowID left_row_id, const ColumnType& left_value) {
+      auto left_row_id_matched = false;
+      right_range.for_every_row_id([&](const RowID right_row_id, const ColumnType& right_value) {
+        if (multi_predicate_join_evaluator.satisfies_all_predicates(left_row_id, right_row_id) &&
+            left_value == right_value) {
+          _emit_combination(bucket_index, left_row_id, right_row_id);
+          left_row_id_matched = true;
+          matched_right_row_ids.insert(right_row_id);
+        }
+      });
+      if (!left_row_id_matched) {
+        _emit_combination(bucket_index, left_row_id, NULL_ROW_ID);
+      }
+    });
 
     // Add null value combinations for right row ids that have no match.
-    right_range.for_every_row_id(_materialized_values_right, _row_ids_right, [&](RowID right_row_id) {
+    right_range.for_every_row_id([&](RowID right_row_id) {
       // Right_row_ids_with_match has no key `right_row_id`.
       if (!matched_right_row_ids.contains(right_row_id)) {
         _emit_combination(bucket_index, NULL_ROW_ID, right_row_id);
@@ -585,18 +535,16 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
       }
     } else {
       // no secondary join predicates
-      left_range.find_matches_with_range(right_range, _materialized_values_left, _materialized_values_right,
-                                         _row_ids_left, _row_ids_right,
-                                         [&](const RowID& left_row_id, const RowID& right_row_id) {
-                                           _emit_combination(bucket_index, left_row_id, right_row_id);
-                                         });
+      left_range.find_matches_with_range(right_range, [&](const RowID& left_row_id, const RowID& right_row_id) {
+        _emit_combination(bucket_index, left_row_id, right_row_id);
+      });
     }
   }
 
   // Emits all combinations of row ids from the left table range and a NULL value on the right side
   // (regarding the primary predicate) to the join output.
   void _emit_right_primary_null_combinations(const std::size_t bucket_index, const PotentialMatchRange& left_range) {
-    left_range.for_every_row_id(_materialized_values_left, _row_ids_left, [&](RowID left_row_id) {
+    left_range.for_every_row_id([&](RowID left_row_id) {
       _emit_combination(bucket_index, left_row_id, NULL_ROW_ID);
     });
   }
@@ -604,7 +552,7 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
   // Emits all combinations of row ids from the right table range and a NULL value on the left side
   // (regarding the primary predicate) to the join output.
   void _emit_left_primary_null_combinations(const std::size_t bucket_index, const PotentialMatchRange& right_range) {
-    right_range.for_every_row_id(_materialized_values_right, _row_ids_right, [&](RowID right_row_id) {
+    right_range.for_every_row_id([&](RowID right_row_id) {
       _emit_combination(bucket_index, NULL_ROW_ID, right_row_id);
     });
   }
@@ -643,8 +591,10 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
   }
 
   // Currently we only support Inner, Equi-Joins.
-  void _join_per_hash(std::size_t bucket_index, std::span<SimdElement>& left_elements,
-                      std::span<SimdElement>& right_elements) {
+  void _join_per_hash(std::size_t bucket_index, std::span<SimdElement> left_elements,
+                      std::span<SimdElement> right_elements, std::span<ColumnType> left_values,
+                      std::span<ColumnType> right_values, std::span<RowID> left_row_ids,
+                      std::span<RowID> right_row_ids) {
     auto multi_predicate_join_evaluator = std::optional<MultiPredicateJoinEvaluator>{};
     if (!_secondary_join_predicates.empty()) {
       multi_predicate_join_evaluator.emplace(*_sort_merge_join._left_input->get_output(),
@@ -667,8 +617,10 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
 
       const auto compare_result = _compare(left_value, right_value);
 
-      const auto left_range = PotentialMatchRange(left_run_start, left_run_end, left_elements);
-      const auto right_range = PotentialMatchRange(right_run_start, right_run_end, right_elements);
+      const auto left_range =
+          PotentialMatchRange(left_run_start, left_run_end, left_elements, left_values, left_row_ids);
+      const auto right_range =
+          PotentialMatchRange(right_run_start, right_run_end, right_elements, right_values, right_row_ids);
 
       _find_matches_in_ranges(left_range, right_range, compare_result, multi_predicate_join_evaluator, bucket_index);
 
@@ -696,8 +648,10 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
       }
     }
 
-    const auto left_remainder = PotentialMatchRange(left_run_start, left_size, left_elements);
-    const auto right_remainder = PotentialMatchRange(right_run_start, right_size, right_elements);
+    const auto left_remainder =
+        PotentialMatchRange(left_run_start, left_size, left_elements, left_values, left_row_ids);
+    const auto right_remainder =
+        PotentialMatchRange(right_run_start, right_size, right_elements, right_values, right_row_ids);
     if (left_run_start < left_size) {
       _find_matches_in_ranges(left_remainder, right_remainder, CompareResult::Less, multi_predicate_join_evaluator,
                               bucket_index);
@@ -714,10 +668,14 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
           _sorted_per_hash_left[cluster_index].size() + _sorted_per_hash_right[cluster_index].size();
       if (merge_row_count > JOB_SPAWN_THRESHOLD) {
         jobs.push_back(std::make_shared<JobTask>([cluster_index, this]() {
-          _join_per_hash(cluster_index, _sorted_per_hash_left[cluster_index], _sorted_per_hash_right[cluster_index]);
+          _join_per_hash(cluster_index, _sorted_per_hash_left[cluster_index], _sorted_per_hash_right[cluster_index],
+                         _sorted_values_left[cluster_index], _sorted_values_right[cluster_index],
+                         _sorted_row_ids_left[cluster_index], _sorted_row_ids_right[cluster_index]);
         }));
       } else {
-        _join_per_hash(cluster_index, _sorted_per_hash_left[cluster_index], _sorted_per_hash_right[cluster_index]);
+        _join_per_hash(cluster_index, _sorted_per_hash_left[cluster_index], _sorted_per_hash_right[cluster_index],
+                       _sorted_values_left[cluster_index], _sorted_values_right[cluster_index],
+                       _sorted_row_ids_left[cluster_index], _sorted_row_ids_right[cluster_index]);
       }
     }
     Hyrise::get().scheduler()->schedule_and_wait_for_tasks(jobs);
@@ -816,11 +774,127 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
     _performance.set_step_runtime(transform_step, timer.lap());
   }
 
+  void _materialized_row_ids_and_values(const std::span<SimdElement> sorted_elements, const RowIDPosList& row_ids,
+                                        simd_sort::simd_vector<RowID>& output_row_ids,
+                                        const std::span<ColumnType> values [[maybe_unused]],
+                                        simd_sort::simd_vector<ColumnType>& output_values [[maybe_unused]]) {
+#ifdef __AVX512F__
+    static constexpr auto GATHER_SIZE = 8;
+#else
+    static constexpr auto GATHER_SIZE = 4;
+#endif
+    constexpr auto BATCH_SIZE = GATHER_SIZE * 8;
+
+    constexpr auto ALIGNMENT_BIT_MASK = simd_sort::get_alignment_bitmask<GATHER_SIZE>();
+    const auto num_items = sorted_elements.size();
+    const auto aligned_size = num_items & ALIGNMENT_BIT_MASK;
+    const auto remaining_size = num_items - aligned_size;
+
+    output_row_ids.resize(num_items);
+    if constexpr (!IS_LOSSLESS_COMPRESSION) {
+      output_values.resize(num_items);
+    }
+
+    auto gather_indices = [&](const uint64_t* __restrict index_begin) {
+      auto indices = std::array<uint32_t, GATHER_SIZE>{};
+
+#pragma clang loop vectorize(enable) interleave(enable) unroll(disable)
+      for (auto index = size_t{0}; index < GATHER_SIZE; ++index) {
+        indices[index] = ((index_begin[index]) << 32u) >> 32u;
+      }
+      return indices;
+    };
+
+    auto gather_row_ids = [&](const uint32_t* __restrict index_begin, const RowID* __restrict row_ids_data,
+                              RowID* __restrict row_ids_output) {
+      auto loaded_data = std::array<RowID, GATHER_SIZE>{};
+#pragma clang loop vectorize(enable) interleave(enable) unroll(disable)
+      for (auto index = size_t{0}; index < GATHER_SIZE; ++index) {
+        loaded_data[index] = row_ids_data[index_begin[index]];
+      }
+      __builtin_memcpy_inline(__builtin_assume_aligned(row_ids_output, BATCH_SIZE), loaded_data.data(), BATCH_SIZE);
+    };
+
+    // Gathers both RowIDs and values (only double and int64_t, strings are handled separately).
+    auto gather_row_ids_and_values = [&](const uint32_t* __restrict index_begin, const RowID* __restrict row_ids_data,
+                                         RowID* __restrict row_ids_output, const ColumnType* __restrict values,
+                                         const ColumnType* __restrict values_output) {
+      auto loaded_data = std::array<RowID, GATHER_SIZE>{};
+      auto loaded_values = std::array<ColumnType, GATHER_SIZE>{};
+
+#pragma clang loop vectorize(enable) interleave(enable) unroll(disable)
+      for (auto index = size_t{0}; index < GATHER_SIZE; ++index) {
+        const auto& rid = index_begin[index];
+        loaded_data[index] = row_ids_data[rid];
+        loaded_values[index] = values[rid];
+      }
+      __builtin_memcpy_inline(__builtin_assume_aligned(row_ids_output, BATCH_SIZE), loaded_data.data(), BATCH_SIZE);
+      __builtin_memcpy_inline(__builtin_assume_aligned(values_output, BATCH_SIZE), loaded_values.data(), BATCH_SIZE);
+    };
+
+    // Gather RowIDs and values in batches of size GATHER_SIZE.
+    // By applying auto vectorization vectorized gather instructions should be used.
+    for (auto index = size_t{0}; index < aligned_size; index += GATHER_SIZE) {
+      auto indices = std::move(gather_indices(reinterpret_cast<uint64_t*>(&sorted_elements[index])));
+      const auto offset = index;
+      if constexpr (IS_LOSSLESS_COMPRESSION) {  // ColumnType is float or int32_t.
+        gather_row_ids(indices.data(), row_ids.data(), output_row_ids.data() + offset);
+      } else if (!std::is_same_v<ColumnType, pmr_string> &&
+                 !std::is_same_v<ColumnType, int32_t>) {  // ColumnType is double or int64_t.
+        gather_row_ids_and_values(indices.data(), row_ids.data(), output_row_ids.data() + offset, values.data(),
+                                  output_values.data() + offset);
+      } else {  // ColumnType is pmr_string.
+        gather_row_ids(indices.data(), row_ids.data(), output_row_ids.data() + offset);
+        for (auto offset = size_t{0}; offset < GATHER_SIZE; ++offset) {
+          output_values[index + offset] = std::move(values[indices[offset]]);
+        }
+      }
+    }
+
+    // Gather remaining RowIDs and values.
+    if (remaining_size > 0) {
+      for (auto index = aligned_size; index < num_items; ++index) {
+        auto rid = sorted_elements[index].index;
+        output_row_ids[index] = row_ids[rid];
+
+        if constexpr (!IS_LOSSLESS_COMPRESSION) {
+          output_values[index] = std::move(values[rid]);
+        }
+      }
+    }
+  }
+
+  void _gather_row_ids_and_values_according_to_sorted_simd_data(
+      std::vector<std::span<SimdElement>>& sorted_elements_per_hash, std::vector<ColumnType>& values,
+      RowIDPosList& row_ids, std::vector<simd_sort::simd_vector<ColumnType>>& sorted_values,
+      std::vector<simd_sort::simd_vector<RowID>>& sorted_row_ids) {
+    auto jobs = std::vector<std::shared_ptr<AbstractTask>>{};
+
+    auto total_size = sorted_elements_per_hash.size();
+    sorted_values.resize(total_size);
+    sorted_row_ids.resize(total_size);
+
+    for (auto cluster_index = size_t{0}; cluster_index < _cluster_count; ++cluster_index) {
+      const auto element_count = sorted_elements_per_hash[cluster_index].size();
+      if (element_count > JOB_SPAWN_THRESHOLD) {
+        jobs.push_back(std::make_shared<JobTask>([&, this, cluster_index]() {
+          _materialized_row_ids_and_values(sorted_elements_per_hash[cluster_index], row_ids,
+                                           sorted_row_ids[cluster_index], values, sorted_values[cluster_index]);
+        }));
+      } else {
+        _materialized_row_ids_and_values(sorted_elements_per_hash[cluster_index], row_ids,
+                                         sorted_row_ids[cluster_index], values, sorted_values[cluster_index]);
+      }
+    }
+
+    Hyrise::get().scheduler()->schedule_and_wait_for_tasks(jobs);
+  }
+
  public:
   std::shared_ptr<const Table> _on_execute() override {
-    // if constexpr (HYRISE_DEBUG) {
-    std::cout << "Execute JoinSimdSortMerge: cluster_count: " << _cluster_count << std::endl;
-    // }
+    if constexpr (HYRISE_DEBUG) {
+      std::cout << "Execute JoinSimdSortMerge: cluster_count: " << _cluster_count << '\n';
+    }
 
     const auto include_null_left = (_mode == JoinMode::Left || _mode == JoinMode::FullOuter);
     const auto include_null_right = (_mode == JoinMode::Right || _mode == JoinMode::FullOuter);
@@ -842,6 +916,13 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
         _simd_elements_right, _partition_storage_right, _working_memory_right));
 
     auto timer = Timer{};
+
+    _gather_row_ids_and_values_according_to_sorted_simd_data(_sorted_per_hash_left, _materialized_values_left,
+                                                             _row_ids_left, _sorted_values_left, _sorted_row_ids_left);
+
+    _gather_row_ids_and_values_according_to_sorted_simd_data(_sorted_per_hash_right, _materialized_values_right,
+                                                             _row_ids_right, _sorted_values_right,
+                                                             _sorted_row_ids_right);
 
     _perform_join();
 
