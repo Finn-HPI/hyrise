@@ -59,11 +59,11 @@ struct RadixPartition {
  protected:
   using CacheLine = union {
     struct {
-      std::array<SimdElement, TUPLES_PER_CACHELINE> values;
+      std::array<SimdElement, BUFFER_SIZE> values;
     } tuples;
 
     struct {
-      std::array<SimdElement, TUPLES_PER_CACHELINE - 1> values;
+      std::array<SimdElement, BUFFER_SIZE - 1> values;
       std::size_t output_offset;
     } data;
   };
@@ -89,7 +89,7 @@ struct RadixPartition {
   std::vector<std::size_t> _partiton_offsets;
 
   static constexpr std::size_t _align_to_cacheline(std::size_t value) {
-    return (value + TUPLES_PER_CACHELINE - 1) & ~(TUPLES_PER_CACHELINE - 1);
+    return (value + BUFFER_SIZE - 1) & ~(BUFFER_SIZE - 1);
   }
 
   size_t _bucket_index(uint32_t key) {
@@ -101,11 +101,12 @@ struct RadixPartition {
     auto& histogram = histogram_data.histogram;
 
     for (auto& element : _elements) {
-      ++histogram[_bucket_index(element.key)].count;
+      const auto bucket_index = _bucket_index(element.key);
+      __builtin_prefetch(histogram.data() + bucket_index, 1, 3);
+      ++histogram[bucket_index].count;
     }
     auto cache_aligned_output_size = std::size_t{0};
     for (auto bucket_index = std::size_t{0}; bucket_index < _partition_size; ++bucket_index) {
-      __builtin_prefetch(&histogram[bucket_index], 1, 0);
       histogram[bucket_index].cache_aligend_count = _align_to_cacheline(histogram[bucket_index].count);
       cache_aligned_output_size += histogram[bucket_index].cache_aligend_count;
     }
@@ -116,7 +117,7 @@ struct RadixPartition {
 
   void __attribute__((always_inline)) _store_cacheline(auto* destination, auto* source) {
     auto nontemporal_store_vec = []<typename VecType>(auto* src, auto* dest) {
-      auto cache_line_vec = simd_sort::load_aligned<VecType>(src);
+      auto cache_line_vec = __builtin_nontemporal_load(src);
       __builtin_nontemporal_store(cache_line_vec, dest);
     };
 #if defined(__AVX512F__)
@@ -188,9 +189,6 @@ struct RadixPartition {
     _partiton_offsets[0] = 0;
 
     for (auto bucket_index = std::size_t{1}; bucket_index < _partition_size; ++bucket_index) {
-      __builtin_prefetch(&buffers[bucket_index - 1], 1, 0);
-      __builtin_prefetch(&buffers[bucket_index], 1, 0);
-
       buffers[bucket_index].data.output_offset =
           buffers[bucket_index - 1].data.output_offset + histogram[bucket_index - 1].cache_aligend_count;
 
@@ -206,25 +204,29 @@ struct RadixPartition {
     auto start_partitioning = std::chrono::high_resolution_clock::now();
     for (auto& element : _elements) {
       const auto bucket_index = _bucket_index(element.key);
-      __builtin_prefetch(&buffers[bucket_index], 1, 0);
+      __builtin_prefetch(buffers.data() + bucket_index, 1, 3);
       auto& buffer = buffers[bucket_index];
       auto slot = buffer.data.output_offset;
-      auto local_offset = slot & (TUPLES_PER_CACHELINE - 1);
+      auto local_offset = slot & (BUFFER_SIZE - 1);
 
       buffer.tuples.values[local_offset] = element;
-      if (local_offset == TUPLES_PER_CACHELINE - 1) {
-        auto* destination = output_start_address + slot - (TUPLES_PER_CACHELINE - 1);
-        auto* source = &buffer;
-        _store_cacheline(destination, source);
+      if (local_offset == BUFFER_SIZE - 1) {
+        auto* destination = output_start_address + slot - (BUFFER_SIZE - 1);
+        auto* source = reinterpret_cast<SimdElement*>(&buffer);
+        for (auto cache_line_index = size_t{0}; cache_line_index < NUM_CACHE_LINES; ++cache_line_index) {
+          const auto offset = cache_line_index * TUPLES_PER_CACHELINE;
+          _store_cacheline(destination + offset, source + offset);
+        }
+        // std::memcpy(destination, source, 8 * BUFFER_SIZE);
       }
       buffer.data.output_offset = slot + 1;
     }
 
     for (auto bucket_index = std::size_t{0}; bucket_index < _partition_size; ++bucket_index) {
-      __builtin_prefetch(&buffers[bucket_index], 1, 0);
+      __builtin_prefetch(buffers.data() + bucket_index, 1, 3);
       auto& buffer = buffers[bucket_index];
       auto slot = buffer.data.output_offset;
-      auto local_offset = slot & (TUPLES_PER_CACHELINE - 1);
+      auto local_offset = slot & (BUFFER_SIZE - 1);
       if (local_offset > 0) {
         auto* output_address = output_start_address + slot - local_offset;
         std::memcpy(output_address, &buffer, local_offset * 8);
