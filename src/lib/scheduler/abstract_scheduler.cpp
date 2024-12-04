@@ -38,7 +38,7 @@ void AbstractScheduler::schedule_tasks(const std::vector<std::shared_ptr<Abstrac
 }
 
 void AbstractScheduler::schedule_and_wait_for_tasks(const std::vector<std::shared_ptr<AbstractTask>>& tasks) {
-  _group_tasks(tasks);
+  // _group_tasks(tasks);
   schedule_tasks(tasks);
   wait_for_tasks(tasks);
 }

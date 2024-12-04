@@ -6,12 +6,15 @@
 #include "operators/join_hash.hpp"
 #include "operators/join_index.hpp"
 #include "operators/join_nested_loop.hpp"
+#include "operators/join_simd_sort_merge.hpp"
 #include "operators/join_sort_merge.hpp"
 #include "operators/table_wrapper.hpp"
 #include "storage/chunk.hpp"
 #include "storage/index/adaptive_radix_tree/adaptive_radix_tree_index.hpp"
 #include "synthetic_table_generator.hpp"
 #include "types.hpp"
+#include "visualization/abstract_visualizer.hpp"
+#include "visualization/pqp_visualizer.hpp"
 
 namespace {
 constexpr auto NUMBER_OF_CHUNKS = size_t{50};
@@ -61,18 +64,30 @@ std::shared_ptr<TableWrapper> generate_table(const size_t number_of_rows) {
   return table_wrapper;
 }
 
+void visualize(const std::string& prefix, std::shared_ptr<AbstractOperator> join) {
+  auto graphviz_config = GraphvizConfig{};
+  graphviz_config.format = "svg";
+  const auto& pqps = std::vector<std::shared_ptr<AbstractOperator>>{std::move(join)};
+  PQPVisualizer{graphviz_config, {}, {}, {}}.visualize(pqps, prefix + "-PQP.svg");
+}
+
 template <class C>
 void bm_join_impl(benchmark::State& state, std::shared_ptr<TableWrapper> table_wrapper_left,
-                  std::shared_ptr<TableWrapper> table_wrapper_right) {
+                  std::shared_ptr<TableWrapper> table_wrapper_right, std::string& prefix [[maybe_unused]]) {
   clear_cache();
 
   auto warm_up = std::make_shared<C>(table_wrapper_left, table_wrapper_right, JoinMode::Inner,
                                      OperatorJoinPredicate{{ColumnID{0}, ColumnID{0}}, PredicateCondition::Equals});
   warm_up->execute();
-  for (auto _ : state) {
+  auto index = 0;
+  auto name = prefix + "_" + warm_up->name();
+  for (auto _ : state) {  // NOLINT
     auto join = std::make_shared<C>(table_wrapper_left, table_wrapper_right, JoinMode::Inner,
                                     OperatorJoinPredicate{{ColumnID{0}, ColumnID{0}}, PredicateCondition::Equals});
     join->execute();
+    auto final_prefix = name + "_" + std::to_string(index) + "_";
+    visualize(final_prefix, join);
+    ++index;
   }
 
   Hyrise::reset();
@@ -83,7 +98,8 @@ void BM_Join_SmallAndSmall(benchmark::State& state) {  // NOLINT 1,000 x 1,000
   auto table_wrapper_left = generate_table(TABLE_SIZE_SMALL);
   auto table_wrapper_right = generate_table(TABLE_SIZE_SMALL);
 
-  bm_join_impl<C>(state, table_wrapper_left, table_wrapper_right);
+  auto prefix = std::string("small_and_small");
+  bm_join_impl<C>(state, table_wrapper_left, table_wrapper_right, prefix);
 }
 
 template <class C>
@@ -91,7 +107,8 @@ void BM_Join_SmallAndBig(benchmark::State& state) {  // NOLINT 1,000 x 10,000,00
   auto table_wrapper_left = generate_table(TABLE_SIZE_SMALL);
   auto table_wrapper_right = generate_table(TABLE_SIZE_BIG);
 
-  bm_join_impl<C>(state, table_wrapper_left, table_wrapper_right);
+  auto prefix = std::string("small_and_big");
+  bm_join_impl<C>(state, table_wrapper_left, table_wrapper_right, prefix);
 }
 
 template <class C>
@@ -99,14 +116,15 @@ void BM_Join_MediumAndMedium(benchmark::State& state) {  // NOLINT 100,000 x 100
   auto table_wrapper_left = generate_table(TABLE_SIZE_MEDIUM);
   auto table_wrapper_right = generate_table(TABLE_SIZE_MEDIUM);
 
-  bm_join_impl<C>(state, table_wrapper_left, table_wrapper_right);
+  auto prefix = std::string("med_and_med");
+  bm_join_impl<C>(state, table_wrapper_left, table_wrapper_right, prefix);
 }
 
 BENCHMARK_TEMPLATE(BM_Join_SmallAndSmall, JoinNestedLoop);
 
-BENCHMARK_TEMPLATE(BM_Join_SmallAndSmall, JoinIndex);
-BENCHMARK_TEMPLATE(BM_Join_SmallAndBig, JoinIndex);
-BENCHMARK_TEMPLATE(BM_Join_MediumAndMedium, JoinIndex);
+// BENCHMARK_TEMPLATE(BM_Join_SmallAndSmall, JoinIndex);
+// BENCHMARK_TEMPLATE(BM_Join_SmallAndBig, JoinIndex);
+// BENCHMARK_TEMPLATE(BM_Join_MediumAndMedium, JoinIndex);
 
 BENCHMARK_TEMPLATE(BM_Join_SmallAndSmall, JoinHash);
 BENCHMARK_TEMPLATE(BM_Join_SmallAndBig, JoinHash);
@@ -115,5 +133,9 @@ BENCHMARK_TEMPLATE(BM_Join_MediumAndMedium, JoinHash);
 BENCHMARK_TEMPLATE(BM_Join_SmallAndSmall, JoinSortMerge);
 BENCHMARK_TEMPLATE(BM_Join_SmallAndBig, JoinSortMerge);
 BENCHMARK_TEMPLATE(BM_Join_MediumAndMedium, JoinSortMerge);
+
+BENCHMARK_TEMPLATE(BM_Join_SmallAndSmall, JoinSimdSortMerge);
+BENCHMARK_TEMPLATE(BM_Join_SmallAndBig, JoinSimdSortMerge);
+BENCHMARK_TEMPLATE(BM_Join_MediumAndMedium, JoinSimdSortMerge);
 
 }  // namespace hyrise

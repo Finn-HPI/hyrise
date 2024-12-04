@@ -21,6 +21,19 @@ add_executable(
     operators/union_all_benchmark.cpp
     tpch_data_micro_benchmark.cpp
     tpch_table_generator_benchmark.cpp
+operators/merge_benchmark.cpp
+
+)
+
+add_executable(
+  hyriseMergeBenchmarks
+
+  micro_benchmark_basic_fixture.cpp
+  micro_benchmark_basic_fixture.hpp
+  micro_benchmark_main.cpp
+  micro_benchmark_utils.cpp
+  micro_benchmark_utils.hpp
+  operators/merge_benchmark.cpp
 )
 
 target_link_libraries(

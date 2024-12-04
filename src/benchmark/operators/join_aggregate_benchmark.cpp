@@ -9,6 +9,7 @@
 #include "operators/aggregate_hash.hpp"
 #include "operators/aggregate_sort.hpp"
 #include "operators/join_hash.hpp"
+#include "operators/join_simd_sort_merge.hpp"
 #include "operators/join_sort_merge.hpp"
 #include "operators/table_wrapper.hpp"
 #include "storage/table.hpp"
@@ -180,8 +181,10 @@ void BM_Join_Aggregate(benchmark::State& state) {
   }
 }
 
+BENCHMARK_TEMPLATE(BM_Join_Aggregate, AggregateSort, JoinSimdSortMerge);
 BENCHMARK_TEMPLATE(BM_Join_Aggregate, AggregateSort, JoinSortMerge);
 BENCHMARK_TEMPLATE(BM_Join_Aggregate, AggregateSort, JoinHash);
+BENCHMARK_TEMPLATE(BM_Join_Aggregate, AggregateHash, JoinSimdSortMerge);
 BENCHMARK_TEMPLATE(BM_Join_Aggregate, AggregateHash, JoinSortMerge);
 BENCHMARK_TEMPLATE(BM_Join_Aggregate, AggregateHash, JoinHash);
 

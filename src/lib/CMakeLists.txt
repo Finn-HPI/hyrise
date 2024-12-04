@@ -223,6 +223,20 @@ set(
     operators/join_sort_merge.hpp
     operators/join_sort_merge/column_materializer.hpp
     operators/join_sort_merge/radix_cluster_sort.hpp
+    operators/join_simd_sort_merge.cpp
+    operators/join_simd_sort_merge.hpp
+    operators/join_simd_sort_merge/circular_buffer.hpp
+    operators/join_simd_sort_merge/simd_utils.hpp
+    operators/join_simd_sort_merge/abstract_two_way_merge.hpp
+    operators/join_simd_sort_merge/two_way_merge.hpp
+    operators/join_simd_sort_merge/multiway_merging.hpp
+    operators/join_simd_sort_merge/multiway_merging_par.hpp
+    operators/join_simd_sort_merge/merge_path.hpp
+    operators/join_simd_sort_merge/k_way_merge.hpp
+    operators/join_simd_sort_merge/radix_partitioning.hpp
+    operators/join_simd_sort_merge/simd_sort.hpp
+    operators/join_simd_sort_merge/column_materializer.hpp
+    operators/join_simd_sort_merge/util.hpp
     operators/join_verification.cpp
     operators/join_verification.hpp
     operators/limit.cpp
@@ -691,6 +705,7 @@ set(
     ${CMAKE_DL_LIBS}
     # Additional libraries added with target_link_libraries_system below
 )
+
 
 if (NOT APPLE)
     set(LIBRARIES ${LIBRARIES} atomic pthread)

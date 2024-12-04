@@ -1,5 +1,9 @@
 #include "sqlite_testrunner.hpp"
 
+#include "visualization/abstract_visualizer.hpp"
+#include "visualization/lqp_visualizer.hpp"
+#include "visualization/pqp_visualizer.hpp"
+
 namespace hyrise {
 
 void SQLiteTestRunner::SetUpTestCase() {
@@ -165,6 +169,13 @@ std::vector<std::pair<size_t, std::string>> SQLiteTestRunner::queries() {
   return queries;
 }
 
+void visualize(const std::string& prefix, SQLPipeline& pipeline) {
+  auto graphviz_config = GraphvizConfig{};
+  graphviz_config.format = "svg";
+  const auto& pqps = pipeline.get_physical_plans();
+  PQPVisualizer{graphviz_config, {}, {}, {}}.visualize(pqps, prefix + "-PQP.svg");
+}
+
 TEST_P(SQLiteTestRunner, CompareToSQLite) {
   _last_run_successful = false;
 
@@ -202,6 +213,9 @@ TEST_P(SQLiteTestRunner, CompareToSQLite) {
   if (table_comparison_msg) {
     FAIL() << "Query failed: " << *table_comparison_msg << '\n';
   }
+
+  auto prefix = "query_" + std::to_string(line);
+  visualize(prefix, sql_pipeline);
 
   // Mark Tables modified by the query as dirty
   for (const auto& plan : sql_pipeline.get_optimized_logical_plans()) {

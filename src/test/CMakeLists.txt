@@ -95,8 +95,13 @@ set(
     lib/operators/join_index_test.cpp
     lib/operators/join_nested_loop_test.cpp
     lib/operators/join_sort_merge_test.cpp
+    lib/operators/join_simd_sort_merge_test.cpp
     lib/operators/join_test_runner.cpp
     lib/operators/join_verification_test.cpp
+    lib/operators/join_simd_sort_merge/multiway_merge_test.cpp
+    lib/operators/join_simd_sort_merge/simd_utils_test.cpp
+    lib/operators/join_simd_sort_merge/two_way_merge_test.cpp
+    lib/operators/join_simd_sort_merge/simd_sort_test.cpp
     lib/operators/limit_test.cpp
     lib/operators/maintenance/create_prepared_plan_test.cpp
     lib/operators/maintenance/create_table_test.cpp
