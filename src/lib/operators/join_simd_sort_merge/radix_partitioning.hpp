@@ -68,15 +68,11 @@ struct RadixPartition {
     } data;
   };
 
-  struct BucketData {
-    std::size_t count;
-    std::size_t cache_aligend_count;
-  };
-
   struct HistogramData {
-    explicit HistogramData(size_t partition_size) : histogram(partition_size) {}
+    explicit HistogramData(size_t partition_size) : histogram(partition_size), cache_aligned_counts(partition_size) {}
 
-    std::vector<BucketData> histogram;
+    std::vector<size_t> histogram;
+    std::vector<size_t> cache_aligned_counts;
     std::size_t cache_aligned_size{};
   };
 
@@ -99,16 +95,17 @@ struct RadixPartition {
   HistogramData _compute_histogram() {
     auto histogram_data = HistogramData(_partition_size);
     auto& histogram = histogram_data.histogram;
+    auto& cache_aligned_counts = histogram_data.cache_aligned_counts;
 
     for (auto& element : _elements) {
       const auto bucket_index = _bucket_index(element.key);
       __builtin_prefetch(histogram.data() + bucket_index, 1, 3);
-      ++histogram[bucket_index].count;
+      ++histogram[bucket_index];
     }
     auto cache_aligned_output_size = std::size_t{0};
     for (auto bucket_index = std::size_t{0}; bucket_index < _partition_size; ++bucket_index) {
-      histogram[bucket_index].cache_aligend_count = _align_to_cacheline(histogram[bucket_index].count);
-      cache_aligned_output_size += histogram[bucket_index].cache_aligend_count;
+      cache_aligned_counts[bucket_index] = _align_to_cacheline(histogram[bucket_index]);
+      cache_aligned_output_size += cache_aligned_counts[bucket_index];
     }
 
     histogram_data.cache_aligned_size = cache_aligned_output_size;
@@ -168,6 +165,7 @@ struct RadixPartition {
     auto start_compute_histogram = std::chrono::high_resolution_clock::now();
     auto histogram_data = std::move(_compute_histogram());
     auto& histogram = histogram_data.histogram;
+    auto& cache_aligned_counts = histogram_data.cache_aligned_counts;
 
     auto end_compute_histogram = std::chrono::high_resolution_clock::now();
     time_histogram = duration_cast<std::chrono::milliseconds>(end_compute_histogram - start_compute_histogram).count();
@@ -184,17 +182,17 @@ struct RadixPartition {
 
     auto buffers = cache_aligned_vector<CacheLine>(_partition_size);  // Cacheline aligned (64-bit).
     buffers[0].data.output_offset = 0;
-    _partitions[0].size = histogram[0].count;
+    _partitions[0].size = histogram[0];
     _partitions[0].data = output_start_address;
     _partiton_offsets[0] = 0;
 
     for (auto bucket_index = std::size_t{1}; bucket_index < _partition_size; ++bucket_index) {
       buffers[bucket_index].data.output_offset =
-          buffers[bucket_index - 1].data.output_offset + histogram[bucket_index - 1].cache_aligend_count;
+          buffers[bucket_index - 1].data.output_offset + cache_aligned_counts[bucket_index - 1];
 
       auto& partition = _partitions[bucket_index];
       _partiton_offsets[bucket_index] = buffers[bucket_index].data.output_offset;
-      partition.size = histogram[bucket_index].count;
+      partition.size = histogram[bucket_index];
       partition.data = output_start_address + buffers[bucket_index].data.output_offset;
     }
 
