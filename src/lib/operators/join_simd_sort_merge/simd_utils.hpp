@@ -11,7 +11,7 @@
 #include <boost/align/aligned_allocator.hpp>
 
 #ifndef L2_CACHE_SIZE
-#define L2_CACHE_SIZE 262144  // Default value (1024KiB)
+#define L2_CACHE_SIZE 1048576  // Default value (1024KiB)
 #endif
 
 #ifndef SYSTEM_L2_CACHE_SIZE

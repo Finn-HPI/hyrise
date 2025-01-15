@@ -92,7 +92,7 @@ TEST_F(MultiwayMergeTest, NoLeaves) {
       return *reinterpret_cast<SortingType*>(&left) < *reinterpret_cast<SortingType*>(&right);
     }));
 
-    auto sorted_bucket_ptrs = std::vector<std::unique_ptr<radix_partition::Bucket>>{};
+    auto sorted_bucket_ptrs = std::vector<radix_partition::Bucket*>{};
 
     // Multiway merging.
     auto multiway_merger = multiway_merging::MultiwayMerger<count_per_vector, SortingType>(sorted_bucket_ptrs);
@@ -130,10 +130,10 @@ TEST_F(MultiwayMergeTest, LeafCountNumberOfTwo) {
         return *reinterpret_cast<SortingType*>(&left) < *reinterpret_cast<SortingType*>(&right);
       }));
 
-      auto sorted_bucket_ptrs = std::vector<std::unique_ptr<radix_partition::Bucket>>();
+      auto sorted_bucket_ptrs = std::vector<radix_partition::Bucket*>();
       sorted_bucket_ptrs.reserve(sorted_buckets.size());
       for (auto& bucket : sorted_buckets) {
-        sorted_bucket_ptrs.push_back(std::make_unique<radix_partition::Bucket>(bucket));
+        sorted_bucket_ptrs.push_back(&bucket);
       }
 
       // Multiway merging.
@@ -181,10 +181,10 @@ TEST_F(MultiwayMergeTest, LeafCountNotNumberOfTwo) {
       // Multiway merging.
       std::cout << "Run multiway merging" << std::endl;
 
-      auto sorted_bucket_ptrs = std::vector<std::unique_ptr<radix_partition::Bucket>>();
+      auto sorted_bucket_ptrs = std::vector<radix_partition::Bucket*>();
       sorted_bucket_ptrs.reserve(sorted_buckets.size());
       for (auto& bucket : sorted_buckets) {
-        sorted_bucket_ptrs.push_back(std::make_unique<radix_partition::Bucket>(bucket));
+        sorted_bucket_ptrs.push_back(&bucket);
       }
       auto multiway_merger = multiway_merging::MultiwayMerger<count_per_vector, SortingType>(sorted_bucket_ptrs);
       auto multiway_merged_output = multiway_merger.merge();

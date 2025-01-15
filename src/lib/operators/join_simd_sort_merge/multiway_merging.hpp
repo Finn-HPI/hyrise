@@ -22,7 +22,7 @@ class MultiwayMerger {
  public:
   using value_type = T;
 
-  explicit MultiwayMerger(std::vector<std::unique_ptr<Bucket>>& sorted_buckets)
+  explicit MultiwayMerger(std::vector<Bucket*>& sorted_buckets)
       : _leaf_count(std::bit_ceil(sorted_buckets.size())),
         _sorted_buckets(std::move(sorted_buckets)),
         _nodes(2 * _leaf_count),
@@ -74,6 +74,45 @@ class MultiwayMerger {
     return merged_output;
   }
 
+  void merge(simd_sort::simd_vector<SimdElement>& merged_output) {
+    // Begin handling of edge cases.
+    if (_sorted_buckets.empty()) {
+      return;
+    }
+
+    merged_output.resize(_total_output_size);
+
+    if (_sorted_buckets.size() == ONE_REMAINING) {
+      std::ranges::copy(_sorted_buckets.front()->elements(), merged_output.begin());
+      return;
+    }
+
+    if (_leaf_count == TWO_REMAINING) {
+      auto& left = _sorted_buckets[0];
+      auto& right = _sorted_buckets[1];
+      TwoWayMerge::template merge_variable_length<count_per_vector * 4>(
+          left->template begin<T>(), right->template begin<T>(), reinterpret_cast<T*>(merged_output.data()), left->size,
+          right->size);
+
+      DebugAssert(std::is_sorted(merged_output.begin(), merged_output.end(),
+                                 [](auto& left, auto& right) {
+                                   return *reinterpret_cast<T*>(&left) < *reinterpret_cast<T*>(&right);
+                                 }),
+                  "Merged output is not sorted.");
+
+      return;
+    }
+    // End handling of edge cases.
+
+    _execute(merged_output.data());
+
+    DebugAssert(std::is_sorted(merged_output.begin(), merged_output.end(),
+                               [](auto& left, auto& right) {
+                                 return *reinterpret_cast<T*>(&left) < *reinterpret_cast<T*>(&right);
+                               }),
+                "Merged output is not sorted.");
+  }
+
  private:
   void _initialize() {
     const auto num_buckets = _sorted_buckets.size();
@@ -109,7 +148,7 @@ class MultiwayMerger {
     constexpr auto CACHE_USAGE = 0.9;
     constexpr auto AVAILABLE_L2_CACHE = static_cast<size_t>(L2_CACHE_SIZE * CACHE_USAGE);
 
-    _buffer_size = (AVAILABLE_L2_CACHE / sizeof(SimdElement)) / count_non_done_inner_nodes;
+    _buffer_size = (2 * AVAILABLE_L2_CACHE / sizeof(SimdElement)) / count_non_done_inner_nodes;
     _read_threshold = _buffer_size / 2;
 
     _fifo_buffer.resize(count_non_done_inner_nodes * _buffer_size);
@@ -277,9 +316,8 @@ class MultiwayMerger {
     return total_number_of_writes;
   }
 
-  static inline std::pair<size_t, size_t> _merge_children(std::span<SimdElement> left_input,
-                                                          std::span<SimdElement> right_input,
-                                                          std::span<SimdElement> output) {
+  static std::pair<size_t, size_t> _merge_children(std::span<SimdElement> left_input,
+                                                   std::span<SimdElement> right_input, std::span<SimdElement> output) {
     auto count_reads_left = size_t{0};
     auto count_reads_right = size_t{0};
     auto count_writes = size_t{0};
@@ -383,12 +421,12 @@ class MultiwayMerger {
 
   static NodeIndex _parent(NodeIndex node) { return node / 2; }
   static NodeIndex _left_child(NodeIndex node) { return 2 * node; }
-  static NodeIndex _right_child(NodeIndex node) { return 2 * node + 1; }
+  static NodeIndex _right_child(NodeIndex node) { return (2 * node) + 1; }
 
   // clang-format on
 
   size_t _leaf_count;
-  std::vector<std::unique_ptr<Bucket>> _sorted_buckets;
+  std::vector<Bucket*> _sorted_buckets;
   std::vector<CircularBuffer> _nodes;
   std::vector<bool> _done;
   size_t _total_output_size;

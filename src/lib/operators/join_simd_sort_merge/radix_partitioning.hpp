@@ -48,6 +48,7 @@ struct RadixPartition {
   explicit RadixPartition(const std::span<SimdElement> elements, size_t cluster_count)
       : _partition_size(cluster_count),
         _bitshift_count{32u - simd_sort::log2_builtin(cluster_count)},
+        _radix_mask{(1u << simd_sort::log2_builtin(cluster_count)) - 1},
         _has_data(true),
         _elements(elements) {}
 
@@ -78,6 +79,7 @@ struct RadixPartition {
 
   size_t _partition_size{};
   size_t _bitshift_count{};
+  uint32_t _radix_mask{};
   bool _has_data = false;
   bool _executed = false;
   std::span<SimdElement> _elements;
@@ -89,7 +91,8 @@ struct RadixPartition {
   }
 
   size_t _bucket_index(uint32_t key) {
-    return key >> _bitshift_count;
+    // return key >> _bitshift_count; // MSB
+    return key & _radix_mask;  // LSB
   }
 
   HistogramData _compute_histogram() {
