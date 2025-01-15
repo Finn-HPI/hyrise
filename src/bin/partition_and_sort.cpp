@@ -11,6 +11,7 @@
 
 #include "hyrise.hpp"
 #include "operators/join_simd_sort_merge/k_way_merge.hpp"
+#include "operators/join_simd_sort_merge/multiway_merging.hpp"
 #include "operators/join_simd_sort_merge/radix_partitioning.hpp"
 #include "operators/join_simd_sort_merge/simd_sort.hpp"
 #include "operators/join_simd_sort_merge/simd_utils.hpp"
@@ -52,16 +53,17 @@ radix_partition::RadixPartition<T> sort_chunk(std::span<SimdElement> elements, c
     auto* input_pointer = bucket.template begin<T>();
     auto* output_pointer = partition.template get_working_memory<T>(bucket_index, working_data);
 
-    simd_sort::sort<count_per_vector>(input_pointer, output_pointer, bucket.size);
+    simd_sort::sort<count_per_vector, T, ExecutionStrategy::PARALLEL>(input_pointer, output_pointer, bucket.size);
     bucket.data = reinterpret_cast<SimdElement*>(output_pointer);
   }
   return partition;
 }
 
 template <typename T>
-void benchmark(size_t scale, size_t cores) {
+void benchmark(size_t scale, size_t cores, std::ofstream& out) {
   std::mt19937 gen(42);
   auto dist = std::uniform_int_distribution<uint32_t>(0, std::numeric_limits<uint32_t>::max());
+
 
   auto base_size = 1'048'576;
   Hyrise::get().topology.use_default_topology(cores);
@@ -79,11 +81,9 @@ void benchmark(size_t scale, size_t cores) {
   std::cout << "element count: " << elements.size() << std::endl;
 
   const auto warmup_runs = 1;
-  const auto runs = 4;
+  const auto runs = 6;
   const auto total_runs = warmup_runs + runs;
 
-  auto run_times = std::vector<size_t>{};
-  run_times.reserve(runs);
   for (auto it = size_t{0}; it < total_runs; ++it) {
     auto start_sort = std::chrono::high_resolution_clock::now();
     auto chunks = std::vector<std::span<SimdElement>>(cores);
@@ -107,33 +107,25 @@ void benchmark(size_t scale, size_t cores) {
 
     Hyrise::get().scheduler()->schedule_and_wait_for_tasks(tasks);
 
-    auto sorted_buckets = std::vector<std::unique_ptr<radix_partition::Bucket>>{};
-    sorted_buckets.reserve(partitions.size());
-
     // Merge individual buckets with same index.
+    auto bucket_merge_tasks = std::vector<std::shared_ptr<AbstractTask>>{};
+    bucket_merge_tasks.reserve(cores);
     for (auto bucket_index = size_t{0}; bucket_index < cores; ++bucket_index) {
-      auto chunk_list = std::vector<simd_sort::DataChunk<T>>{};
-      chunk_list.reserve(partitions.size());
-
-      auto merge_output_size = size_t{0};
-      for (auto& partition : partitions) {
-        merge_output_size += partition.bucket(bucket_index).size;
-      }
-      auto input = simd_sort::simd_vector<T>(merge_output_size);
-      auto output = simd_sort::simd_vector<T>(merge_output_size);
-      auto offset = size_t{0};
-      for (auto& partition : partitions) {
-        auto& bucket = partition.bucket(bucket_index);
-        std::ranges::copy(bucket.template begin<T>(), bucket.template end<T>(), input.data() + offset);
-
-        chunk_list.emplace_back(input.data() + offset, output.data() + offset, bucket.size);
-        offset += bucket.size;
-      }
-
-      auto sorted_chunk = simd_sort::simd_merge_parallel<choose_count_per_vector(), true, T>(chunk_list, cores);
-      do_not_optimize_away(sorted_chunk);
-      // auto k_way_merger = k_way_merge::KWayMerge<T>(sorted_buckets);
+      bucket_merge_tasks.push_back(std::make_shared<JobTask>([&, bucket_index]() {
+        auto sorted_buckets = std::vector<std::unique_ptr<radix_partition::Bucket>>{};
+        sorted_buckets.reserve(partitions.size());
+	for (auto& partition : partitions) {
+            auto& bucket = partition.bucket(bucket_index);
+            sorted_buckets.push_back(std::make_unique<radix_partition::Bucket>(bucket));
+        }
+	// auto merger =  k_way_merge::KWayMerge<T>(sorted_buckets);
+        auto merger =  multiway_merging::MultiwayMerger<choose_count_per_vector(), T>(sorted_buckets);
+	//auto merger2 = multiway_merging::MultiwayMerger<choose_count_per_vector(), T>(std::span(sorted_buckets.begin() + sorted_buckets.size() /2, sorted_buckets/2));
+        do_not_optimize_away(merger.merge());
+      }));
     }
+
+    Hyrise::get().scheduler()->schedule_and_wait_for_tasks(bucket_merge_tasks);
 
     auto stop_sort = std::chrono::high_resolution_clock::now();
     if (it < warmup_runs) {
@@ -141,50 +133,30 @@ void benchmark(size_t scale, size_t cores) {
     }
 
     auto time = std::chrono::duration_cast<std::chrono::milliseconds>(stop_sort - start_sort).count();
-    run_times.push_back(time);
+
+  auto me_s = (static_cast<double>(elements.size()) / (static_cast<double>(time) / 1'000)) / 1'000'000;
+
+  std::cout <<"scale: " << scale << ", time: " << time << " (ms), ME/s: " << me_s << std::endl;
+  out << scale << "," << it << "," << time << "," << me_s << std::endl;
+
   }
-  const auto total_time = std::accumulate(run_times.begin(), run_times.end(), size_t{0});
-  const auto avg_time = static_cast<double>(total_time) / runs;
-
-  auto me_s = (static_cast<double>(elements.size()) / (static_cast<double>(avg_time) / 1'000)) / 1'000'000;
-
-  std::cout << "avg: " << avg_time << " (ms), ME/s: " << me_s << std::endl;
-
-  // Reserve and insert elements into the vector
-
-  // std::cout << "validate: " << std::endl;
-  // auto result = simd_sort::simd_vector<SimdElement>{};
-  // result.reserve(elements.size());
-  //
-  // for (auto bucket_index = size_t{0}; bucket_index < cores; ++bucket_index) {
-  //   auto& bucket = partition.bucket(bucket_index);
-  //   result.insert(result.end(), bucket.elements().begin(), bucket.elements().end());
-  // }
-  //
-  // std::sort(elements.begin(), elements.end(), [](auto& lhs, auto& rhs) {
-  //   return lhs.key < rhs.key;
-  // });
-  // std::cout << "result is sorted: " << std::ranges::is_sorted(result, [](auto& lhs, auto& rhs) {
-  //   return lhs.key < rhs.key;
-  // });
-  //
-  // for (auto index = size_t{0}; index < elements.size(); ++index) {
-  //   if (elements[index].key != result[index].key) {
-  //     Assert(false, "found mismatch");
-  //     break;
-  //   }
-  // }
 }
 
 }  // namespace
 
 int main() {
-  for (auto cores = size_t{1}; cores <= 16; cores *= 2) {
-    std::cout << "cores: " << cores << std::endl;
-    benchmark<int64_t>(256, cores);
+  auto cores = size_t{64};
+  std::string file_name = std::to_string(cores) + "_throughput_test.csv";
+  std::ofstream out;
+  out.open(file_name, std::ios::out | std::ios::trunc);
+
+  out << "scale,run,time,me_s" << std::endl;
+  for (auto scale = size_t{1024}; scale <= 1024; scale *=2) {
+	  benchmark<double>(scale, cores, out);
   }
 
   Hyrise::get().set_scheduler(std::make_shared<ImmediateExecutionScheduler>());
 
   return 0;
 }
+
