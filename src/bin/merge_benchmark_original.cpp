@@ -67,65 +67,76 @@ void clear_cache() {
   clear.resize(0);
 }
 
-template <class C>
-uint64_t benchmark(size_t count_leaves, size_t leaf_size) {
-  using SortingType = C::value_type;
-  auto bucket_data = std::vector<simd_sort::simd_vector<int64_t>>(count_leaves);
-  auto sorted_buckets = generate_sorted_buckets<SortingType>(count_leaves, bucket_data, leaf_size);
+constexpr size_t count_per_vector() {
+#ifdef __AVX512F__
+  return 8;
+#else
+  return 4;
+#endif
+}
 
-  auto start = std::chrono::high_resolution_clock::now();
-  auto merger = C(sorted_buckets);
-  do_not_optimize_away(merger.merge());
-  auto end = std::chrono::high_resolution_clock::now();
+template <class C, typename SortingType>
+void benchmark(size_t scale, size_t leaf_count, std::ofstream& out) {
+  const auto base_size = 1'048'576;  // 2^20
+  const auto num_items = scale * base_size;
 
-  /* Getting number of nanoseconds as an integer. */
-  auto ns_int = duration_cast<std::chrono::nanoseconds>(end - start);
-  return ns_int.count();
+  const auto leaf_size = num_items / leaf_count;
+
+  const auto warmup_runs = 1;
+  const auto runs = 4;
+  const auto num_runs = runs + warmup_runs;
+
+  std::vector<uint64_t> runtimes;
+  runtimes.reserve(runs);
+
+  for (auto run = size_t{0}; run < num_runs; ++run) {
+    auto bucket_data = std::vector<simd_sort::simd_vector<int64_t>>(leaf_count);
+    auto sorted_buckets = generate_sorted_buckets<SortingType>(leaf_count, bucket_data, leaf_size);
+
+    auto start = std::chrono::high_resolution_clock::now();
+    auto merger = C(sorted_buckets);
+    do_not_optimize_away(merger.merge());
+    auto end = std::chrono::high_resolution_clock::now();
+
+    /* Getting number of nanoseconds as an integer. */
+    auto execution_time = duration_cast<std::chrono::milliseconds>(end - start).count();
+
+    if (run < warmup_runs) {
+      continue;
+    }
+    runtimes.push_back(execution_time);
+  }
+
+  const auto total_runtime = std::accumulate(runtimes.begin(), runtimes.end(), 0ul);
+  auto execution_time = total_runtime / runs;
+
+  std::cout << scale << ", " << leaf_count << ", " << execution_time << std::endl;
+  out << scale << "," << execution_time;
 }
 
 int main() {
+  using DataType = int64_t;
   const auto name = pmr_string{"Merging Test"};
   std::cout << "Benchmark: " << name << "!\n";
 
-  const auto max_leaf_size = 1000 * 20;
-  const auto increment = 1000;
+  for (auto leaf_count = size_t{8}; leaf_count <= 256; leaf_count *= 2) {
+    std::string kway_output = std::to_string(leaf_count) + "_kway_merge.csv";
+    std::ofstream kway_out_file;
+    kway_out_file.open(kway_output, std::ios::out | std::ios::trunc);
 
-  auto run = [&]<class C>(std::string_view type) {
-    std::cout << "run: " << type << std::endl;
-    std::string file_name = std::string(type) + "_results.csv";
-    std::ofstream file;
-    file.open(file_name, std::ios::app);
+    std::string mway_output = std::to_string(leaf_count) + "_mway_merge.csv";
+    std::ofstream mway_out_file;
+    mway_out_file.open(mway_output, std::ios::out | std::ios::trunc);
 
-    // Check if file opened successfully
-    if (!file.is_open()) {
-      std::cerr << "Error: Could not open file " << file_name << std::endl;
-      return;
+    for (auto scale = size_t{1}; scale <= 256; scale *= 2) {
+      std::cout << "KWayMerge: scale = " << scale << std::endl;
+      benchmark<k_way_merge::KWayMerge<DataType>, DataType>(scale, leaf_count, kway_out_file);
+      std::cout << "MWayMerge: scale = " << scale << std::endl;
+      benchmark<multiway_merging::MultiwayMerger<count_per_vector(), DataType>, DataType>(scale, leaf_count,
+                                                                                          mway_out_file);
     }
-
-    for (auto leaf_size = size_t{1000}; leaf_size <= max_leaf_size; leaf_size += increment) {
-      std::cout << "leaf_size: " << leaf_size << std::endl;
-      for (auto leaf_count = size_t{2}; leaf_count <= 256; ++leaf_count) {
-        auto execution_time = benchmark<C>(leaf_count, leaf_size);
-
-        file << leaf_count << "," << leaf_size << "," << execution_time << "\n";
-      }
-      file.flush();
-    }
-    file.close();
-  };
-
-  run.template operator()<k_way_merge::KWayMerge<int64_t>>("kway_merge_int");
-#ifdef __AVX512F__
-  run.template operator()<multiway_merging::MultiwayMerger<8, int64_t>>("multiway_merge_int");
-#else
-  run.template operator()<multiway_merging::MultiwayMerger<4, int64_t>>("multiway_merge_int");
-#endif
-
-  run.template operator()<k_way_merge::KWayMerge<double>>("kway_merge_double");
-#ifdef __AVX512F__
-  run.template operator()<multiway_merging::MultiwayMerger<8, double>>("multiway_merge_double");
-#else
-  run.template operator()<multiway_merging::MultiwayMerger<4, double>>("multiway_merge_double");
-#endif
+    kway_out_file.close();
+    mway_out_file.close();
+  }
   return 0;
 }

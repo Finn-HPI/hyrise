@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <chrono>
 #include <fstream>
+#include <hyrise.hpp>
 #include <iostream>
 #include <random>
 #include <span>

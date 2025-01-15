@@ -11,8 +11,14 @@
 #include <boost/align/aligned_allocator.hpp>
 
 #ifndef L2_CACHE_SIZE
-#define L2_CACHE_SIZE 1048576  // Default value (1024KiB)
+#define L2_CACHE_SIZE 262144  // Default value (1024KiB)
 #endif
+
+#ifndef SYSTEM_L2_CACHE_SIZE
+constexpr auto L2_SIZE = 1;
+#else
+constexpr auto L2_SIZE = SYSTEM_L2_CACHE_SIZE;
+#endif  // !SYSTEM_L2_CACHE_SIZE
 
 namespace hyrise::simd_sort {
 
@@ -80,30 +86,30 @@ struct MultiVec<1, elements_per_register, VecType> {
   VecType a;
 
   template <typename T>
-  inline void __attribute__((always_inline)) load(T* address) {
+  void __attribute__((always_inline)) load(T* address) {
     a = load_aligned<VecType>(address);
   }
 
   template <typename T>
-  inline void __attribute__((always_inline)) loadu(T* address) {
+  void __attribute__((always_inline)) loadu(T* address) {
     a = load_unaligned<VecType>(address);
   }
 
   template <typename T>
-  inline void __attribute__((always_inline)) store(T* address) {
+  void __attribute__((always_inline)) store(T* address) {
     store_aligned(a, address);
   }
 
   template <typename T>
-  inline void __attribute__((always_inline)) storeu(T* address) {
+  void __attribute__((always_inline)) storeu(T* address) {
     store_unaligned(a, address);
   }
 
-  inline VecType& __attribute__((always_inline)) first() {
+  VecType& __attribute__((always_inline)) first() {
     return a;
   }
 
-  inline VecType& __attribute__((always_inline)) last() {
+  VecType& __attribute__((always_inline)) last() {
     return a;
   }
 };
@@ -114,34 +120,34 @@ struct MultiVec<2, elements_per_register, VecType> {
   VecType b;
 
   template <typename T>
-  inline void __attribute__((always_inline)) load(T* address) {
+  void __attribute__((always_inline)) load(T* address) {
     a = load_aligned<VecType>(address);
     b = load_aligned<VecType>(address + elements_per_register);
   }
 
   template <typename T>
-  inline void __attribute__((always_inline)) loadu(T* address) {
+  void __attribute__((always_inline)) loadu(T* address) {
     a = load_unaligned<VecType>(address);
     b = load_unaligned<VecType>(address + elements_per_register);
   }
 
   template <typename T>
-  inline void __attribute__((always_inline)) store(T* address) {
+  void __attribute__((always_inline)) store(T* address) {
     store_aligned(a, address);
     store_aligned(b, address + elements_per_register);
   }
 
   template <typename T>
-  inline void __attribute__((always_inline)) storeu(T* address) {
+  void __attribute__((always_inline)) storeu(T* address) {
     store_unaligned(a, address);
     store_unaligned(b, address + elements_per_register);
   }
 
-  inline VecType& __attribute__((always_inline)) first() {
+  VecType& __attribute__((always_inline)) first() {
     return a;
   }
 
-  inline VecType& __attribute__((always_inline)) last() {
+  VecType& __attribute__((always_inline)) last() {
     return b;
   }
 };
@@ -154,43 +160,111 @@ struct MultiVec<4, elements_per_register, VecType> {
   VecType d;
 
   template <typename T>
-  inline void __attribute__((always_inline)) load(T* address) {
+  void __attribute__((always_inline)) load(T* address) {
     a = load_aligned<VecType>(address);
     b = load_aligned<VecType>(address + elements_per_register);
-    c = load_aligned<VecType>(address + 2 * elements_per_register);
-    d = load_aligned<VecType>(address + 3 * elements_per_register);
+    c = load_aligned<VecType>(address + (2 * elements_per_register));
+    d = load_aligned<VecType>(address + (3 * elements_per_register));
   }
 
   template <typename T>
-  inline void __attribute__((always_inline)) loadu(T* address) {
+  void __attribute__((always_inline)) loadu(T* address) {
     a = load_unaligned<VecType>(address);
     b = load_unaligned<VecType>(address + elements_per_register);
-    c = load_unaligned<VecType>(address + 2 * elements_per_register);
-    d = load_unaligned<VecType>(address + 3 * elements_per_register);
+    c = load_unaligned<VecType>(address + (2 * elements_per_register));
+    d = load_unaligned<VecType>(address + (3 * elements_per_register));
   }
 
   template <typename T>
-  inline void __attribute__((always_inline)) store(T* address) {
+  void __attribute__((always_inline)) store(T* address) {
     store_aligned(a, address);
     store_aligned(b, address + elements_per_register);
-    store_aligned(c, address + 2 * elements_per_register);
-    store_aligned(d, address + 3 * elements_per_register);
+    store_aligned(c, address + (2 * elements_per_register));
+    store_aligned(d, address + (3 * elements_per_register));
   }
 
   template <typename T>
-  inline void __attribute__((always_inline)) storeu(T* address) {
+  void __attribute__((always_inline)) storeu(T* address) {
     store_unaligned(a, address);
     store_unaligned(b, address + elements_per_register);
-    store_unaligned(c, address + 2 * elements_per_register);
-    store_unaligned(d, address + 3 * elements_per_register);
+    store_unaligned(c, address + (2 * elements_per_register));
+    store_unaligned(d, address + (3 * elements_per_register));
   }
 
-  inline VecType& __attribute__((always_inline)) first() {
+  VecType& __attribute__((always_inline)) first() {
     return a;
   }
 
-  inline VecType& __attribute__((always_inline)) last() {
+  VecType& __attribute__((always_inline)) last() {
     return d;
+  }
+};
+
+template <typename VecType, std::size_t elements_per_register>
+struct MultiVec<8, elements_per_register, VecType> {
+  VecType a;
+  VecType b;
+  VecType c;
+  VecType d;
+  VecType e;
+  VecType f;
+  VecType g;
+  VecType h;
+
+  template <typename T>
+  void __attribute__((always_inline)) load(T* address) {
+    a = load_aligned<VecType>(address);
+    b = load_aligned<VecType>(address + elements_per_register);
+    c = load_aligned<VecType>(address + (2 * elements_per_register));
+    d = load_aligned<VecType>(address + (3 * elements_per_register));
+    e = load_aligned<VecType>(address + (4 * elements_per_register));
+    f = load_aligned<VecType>(address + (5 * elements_per_register));
+    g = load_aligned<VecType>(address + (6 * elements_per_register));
+    h = load_aligned<VecType>(address + (7 * elements_per_register));
+  }
+
+  template <typename T>
+  void __attribute__((always_inline)) loadu(T* address) {
+    a = load_unaligned<VecType>(address);
+    b = load_unaligned<VecType>(address + elements_per_register);
+    c = load_unaligned<VecType>(address + (2 * elements_per_register));
+    d = load_unaligned<VecType>(address + (3 * elements_per_register));
+    e = load_unaligned<VecType>(address + (4 * elements_per_register));
+    f = load_unaligned<VecType>(address + (5 * elements_per_register));
+    g = load_unaligned<VecType>(address + (6 * elements_per_register));
+    h = load_unaligned<VecType>(address + (7 * elements_per_register));
+  }
+
+  template <typename T>
+  void __attribute__((always_inline)) store(T* address) {
+    store_aligned(a, address);
+    store_aligned(b, address + elements_per_register);
+    store_aligned(c, address + (2 * elements_per_register));
+    store_aligned(d, address + (3 * elements_per_register));
+    store_aligned(e, address + (4 * elements_per_register));
+    store_aligned(f, address + (5 * elements_per_register));
+    store_aligned(g, address + (6 * elements_per_register));
+    store_aligned(h, address + (7 * elements_per_register));
+  }
+
+  template <typename T>
+  void __attribute__((always_inline)) storeu(T* address) {
+    store_unaligned(a, address);
+    store_unaligned(b, address + elements_per_register);
+    store_unaligned(c, address + (2 * elements_per_register));
+    store_unaligned(d, address + (3 * elements_per_register));
+    store_unaligned(e, address + (4 * elements_per_register));
+    store_unaligned(f, address + (5 * elements_per_register));
+    store_unaligned(g, address + (6 * elements_per_register));
+    store_unaligned(h, address + (7 * elements_per_register));
+  }
+
+  VecType& __attribute__((always_inline)) first() {
+    return a;
+  }
+
+  VecType& __attribute__((always_inline)) last() {
+    return h;
   }
 };
 
@@ -215,7 +289,7 @@ static inline void __attribute__((always_inline)) compare_min_max(VecType& input
 
 template <typename T>
 struct SortingNetwork<2, T> {
-  static inline void __attribute__((always_inline)) sort(T* data, T* output) {
+  static void __attribute__((always_inline)) sort(T* data, T* output) {
     constexpr auto COUNT_PER_VECTOR = 2;
     constexpr auto VECTOR_SIZE = COUNT_PER_VECTOR * sizeof(T);
     using VecType = Vec<VECTOR_SIZE, T>;
@@ -237,7 +311,7 @@ struct SortingNetwork<2, T> {
 
 template <typename T>
 struct SortingNetwork<4, T> {
-  static inline void __attribute__((always_inline)) sort(T* data, T* output) {
+  static void __attribute__((always_inline)) sort(T* data, T* output) {
     constexpr auto COUNT_PER_VECTOR = 4;
     constexpr auto VECTOR_SIZE = COUNT_PER_VECTOR * sizeof(T);
     using VecType = Vec<VECTOR_SIZE, T>;
@@ -276,7 +350,7 @@ struct SortingNetwork<4, T> {
 
 template <typename T>
 struct SortingNetwork<8, T> {
-  static inline void __attribute__((always_inline)) sort(T* data, T* output) {
+  static void __attribute__((always_inline)) sort(T* data, T* output) {
     constexpr auto COUNT_PER_VECTOR = 8;
     constexpr auto VECTOR_SIZE = COUNT_PER_VECTOR * sizeof(T);
     using VecType = Vec<VECTOR_SIZE, T>;

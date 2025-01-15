@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <array>
 #include <cassert>
+#include <chrono>
 #include <cmath>
 #include <utility>
 #include <vector>
@@ -17,6 +18,10 @@
 #include "two_way_merge.hpp"
 
 namespace hyrise::simd_sort {
+
+constexpr auto LEVEL2_MERGE_KERNEL_SCALE = 2;
+constexpr auto LEVEL3_MERGE_KERNEL_SCALE = 4;
+constexpr auto LEVEL4_MERGE_KERNEL_SCALE = 4;
 
 template <typename T>
 struct DataChunk {
@@ -65,10 +70,14 @@ inline void __attribute__((always_inline)) sort_chunk(DataChunk<T>& block) {
   const auto log_block_size = log2_builtin(num_items);
   const auto stop_level = log_block_size - 2;
   merge_level<count_per_vector, count_per_vector>(start_level, input_output_pointers, num_items);
-  merge_level<count_per_vector, count_per_vector * 2>(start_level + 1, input_output_pointers, num_items);
+  merge_level<count_per_vector, count_per_vector * LEVEL2_MERGE_KERNEL_SCALE>(start_level + 1, input_output_pointers,
+                                                                              num_items);
+  merge_level<count_per_vector, count_per_vector * LEVEL3_MERGE_KERNEL_SCALE>(start_level + 2, input_output_pointers,
+                                                                              num_items);
 
-  for (auto level = std::size_t{start_level + 2}; level < stop_level; ++level) {
-    merge_level<count_per_vector, count_per_vector * 4>(level, input_output_pointers, num_items);
+  for (auto level = std::size_t{start_level + 3}; level < stop_level; ++level) {
+    merge_level<count_per_vector, count_per_vector * LEVEL4_MERGE_KERNEL_SCALE>(level, input_output_pointers,
+                                                                                num_items);
   }
 
   auto input_length = 1u << stop_level;
@@ -77,28 +86,50 @@ inline void __attribute__((always_inline)) sort_chunk(DataChunk<T>& block) {
   auto* output = input_output_pointers[input_selection_index ^ 1u];
 
   using TwoWayMerge = TwoWayMerge<count_per_vector, T>;
-  TwoWayMerge::template merge_equal_length<count_per_vector * 4>(input, input + input_length, output, input_length);
-  TwoWayMerge::template merge_equal_length<count_per_vector * 4>(input + (2 * input_length), input + (3 * input_length),
-                                                                 output + (2 * input_length), input_length);
+  TwoWayMerge::template merge_equal_length<count_per_vector * LEVEL4_MERGE_KERNEL_SCALE>(input, input + input_length,
+                                                                                         output, input_length);
+  TwoWayMerge::template merge_equal_length<count_per_vector * LEVEL4_MERGE_KERNEL_SCALE>(
+      input + (2 * input_length), input + (3 * input_length), output + (2 * input_length), input_length);
   input_length <<= 1u;
-  TwoWayMerge::template merge_equal_length<count_per_vector * 4>(output, output + input_length, input, input_length);
+  TwoWayMerge::template merge_equal_length<count_per_vector * LEVEL4_MERGE_KERNEL_SCALE>(output, output + input_length,
+                                                                                         input, input_length);
   block.input = output;
   block.output = input;
 }
 
 template <std::size_t count_per_vector, typename T>
 inline std::size_t __attribute__((always_inline)) merge_chunk_list(std::vector<DataChunk<T>>& chunk_list,
-                                                                   std::size_t chunk_count) {
+                                                                   std::size_t chunk_count, bool reverse = false) {
   using TwoWayMerge = TwoWayMerge<count_per_vector, T>;
   auto updated_chunk_count = std::size_t{0};
   const auto last_chunk_index = chunk_count - 1;
-  for (auto chunk_index = std::size_t{0}; chunk_index < last_chunk_index; chunk_index += 2) {
-    const auto& chunk_info_a = chunk_list[chunk_index];
-    const auto& chunk_info_b = chunk_list[chunk_index + 1];
-    TwoWayMerge::template merge_variable_length<count_per_vector * 4>(
-        chunk_info_a.input, chunk_info_b.input, chunk_info_a.output, chunk_info_a.size, chunk_info_b.size);
-    chunk_list[updated_chunk_count] = {chunk_info_a.output, chunk_info_a.input, chunk_info_a.size + chunk_info_b.size};
-    ++updated_chunk_count;
+  if (!reverse) {
+    for (auto chunk_index = std::size_t{0}; chunk_index < last_chunk_index; chunk_index += 2) {
+      const auto& chunk_info_a = chunk_list[chunk_index];
+      const auto& chunk_info_b = chunk_list[chunk_index + 1];
+      TwoWayMerge::template merge_variable_length<count_per_vector * LEVEL4_MERGE_KERNEL_SCALE>(
+          chunk_info_a.input, chunk_info_b.input, chunk_info_a.output, chunk_info_a.size, chunk_info_b.size);
+      chunk_list[updated_chunk_count] = {chunk_info_a.output, chunk_info_a.input,
+                                         chunk_info_a.size + chunk_info_b.size};
+      ++updated_chunk_count;
+    }
+  } else {
+    auto old_chunk_list = std::vector<DataChunk<T>>(chunk_count);
+    std::ranges::copy(std::span(chunk_list.begin(), chunk_count), old_chunk_list.begin());
+
+    auto rounded_chunk_size = chunk_count & ~1u;
+    auto chunk_index = rounded_chunk_size - 1;
+    updated_chunk_count = rounded_chunk_size / 2;
+
+    for (auto old_chunk_index = static_cast<int64_t>(chunk_index), index = int64_t{0}; old_chunk_index > 0;
+         old_chunk_index -= 2, ++index) {
+      const auto& chunk_info_a = old_chunk_list[old_chunk_index - 1];
+      const auto& chunk_info_b = old_chunk_list[old_chunk_index];
+      TwoWayMerge::template merge_variable_length<count_per_vector * LEVEL4_MERGE_KERNEL_SCALE>(
+          chunk_info_a.input, chunk_info_b.input, chunk_info_a.output, chunk_info_a.size, chunk_info_b.size);
+      chunk_list[(updated_chunk_count - 1) - index] = {chunk_info_a.output, chunk_info_a.input,
+                                                       chunk_info_a.size + chunk_info_b.size};
+    }
   }
   // If we had odd many blocks, we have one additional unmerged block for the next iteration.
   if (chunk_count % 2) {
@@ -123,7 +154,7 @@ inline std::size_t __attribute__((always_inline)) parallel_merge_chunk_list(std:
     const auto& chunk_info_b = chunk_list[chunk_index + 1];
 
     merge_tasks.push_back(std::make_shared<JobTask>([&chunk_list, chunk_info_a, chunk_info_b, updated_chunk_count]() {
-      TwoWayMerge::template merge_variable_length<count_per_vector * 4>(
+      TwoWayMerge::template merge_variable_length<count_per_vector * LEVEL4_MERGE_KERNEL_SCALE>(
           chunk_info_a.input, chunk_info_b.input, chunk_info_a.output, chunk_info_a.size, chunk_info_b.size);
       chunk_list[updated_chunk_count] = {chunk_info_a.output, chunk_info_a.input,
                                          chunk_info_a.size + chunk_info_b.size};
@@ -171,7 +202,7 @@ simd_sort::DataChunk<T> merge_recursive(std::span<simd_sort::DataChunk<T>> chunk
   Hyrise::get().scheduler()->schedule_and_wait_for_tasks(tasks);
 
   using TwoWayMerge = hyrise::simd_sort::TwoWayMerge<count_per_vector, T>;
-  TwoWayMerge::template merge_variable_length<count_per_vector * 4>(
+  TwoWayMerge::template merge_variable_length<count_per_vector * LEVEL4_MERGE_KERNEL_SCALE>(
       chunk_info_lhs.input, chunk_info_rhs.input, chunk_info_lhs.output, chunk_info_lhs.size, chunk_info_rhs.size);
 
   return {chunk_info_lhs.output, chunk_info_lhs.input, chunk_info_lhs.size + chunk_info_rhs.size};
@@ -224,7 +255,7 @@ simd_sort::DataChunk<T> merge_recursive_with_merge_path(std::span<simd_sort::Dat
   }
 
   using TwoWayMerge = hyrise::simd_sort::TwoWayMerge<count_per_vector, T>;
-  TwoWayMerge::template merge_variable_length<count_per_vector * 4>(
+  TwoWayMerge::template merge_variable_length<count_per_vector * LEVEL4_MERGE_KERNEL_SCALE>(
       chunk_info_lhs.input, chunk_info_rhs.input, chunk_info_lhs.output, chunk_info_lhs.size, chunk_info_rhs.size);
 
   return {chunk_info_lhs.output, chunk_info_lhs.input, chunk_info_lhs.size + chunk_info_rhs.size};
@@ -296,10 +327,11 @@ inline void __attribute__((always_inline)) sort_incomplete_chunk(DataChunk<T>& c
 
 template <std::size_t count_per_vector, typename T,
           ExecutionStrategy execution_strategy = ExecutionStrategy::SEQUENTIAL>
-void sort(T*& input_ptr, T*& output_ptr, std::size_t element_count) {
+std::pair<size_t, size_t> sort(T*& input_ptr, T*& output_ptr, std::size_t element_count) {
   if (element_count <= 0) [[unlikely]] {
-    return;
+    return {};
   }
+  auto sort_chunk_start = std::chrono::high_resolution_clock::now();
   constexpr auto BLOCK_SIZE = block_size<T>();
   auto* input = input_ptr;
   auto* output = output_ptr;
@@ -330,6 +362,14 @@ void sort(T*& input_ptr, T*& output_ptr, std::size_t element_count) {
         std::swap(chunk.input, chunk.output);
       }));
     }
+    if (remaining_items) {
+      sort_tasks.push_back(std::make_shared<JobTask>([&]() {
+        auto& chunk = chunk_list.back();
+        chunk.size = remaining_items;
+        sort_incomplete_chunk<count_per_vector>(chunk);
+        std::swap(chunk.input, chunk.output);
+      }));
+    }
 
     Hyrise::get().scheduler()->schedule_and_wait_for_tasks(sort_tasks);
 
@@ -339,28 +379,35 @@ void sort(T*& input_ptr, T*& output_ptr, std::size_t element_count) {
       sort_chunk<count_per_vector>(chunk);
       std::swap(chunk.input, chunk.output);
     }
-  }
-
-  if (remaining_items) {
-    auto& chunk = chunk_list.back();
-    chunk.size = remaining_items;
-    sort_incomplete_chunk<count_per_vector>(chunk);
-    std::swap(chunk.input, chunk.output);
-  }
-  // Next we merge all these chunks iteratively to achieve a global sorting.
-  const auto log_n = static_cast<std::size_t>(std::ceil(std::log2(element_count)));
-  const auto log_block_size = log2_builtin(BLOCK_SIZE);
-
-  for (auto level_index = log_block_size; level_index < log_n; ++level_index) {
-    if constexpr (execution_strategy == ExecutionStrategy::PARALLEL) {
-      chunk_count = parallel_merge_chunk_list<count_per_vector>(chunk_list, chunk_count);
-    } else {
-      chunk_count = merge_chunk_list<count_per_vector>(chunk_list, chunk_count);
+    if (remaining_items) {
+      auto& chunk = chunk_list.back();
+      chunk.size = remaining_items;
+      sort_incomplete_chunk<count_per_vector>(chunk);
+      std::swap(chunk.input, chunk.output);
     }
   }
+
+  auto sort_chunk_end = std::chrono::high_resolution_clock::now();
+  auto merge_start = std::chrono::high_resolution_clock::now();
+
+  // Next we merge all these chunks to achieve a global sorting.
+  if constexpr (execution_strategy == ExecutionStrategy::PARALLEL) {
+    merge_recursive<count_per_vector, T>(chunk_list);
+  } else {
+    const auto log_n = static_cast<std::size_t>(std::ceil(std::log2(element_count)));
+    const auto log_block_size = log2_builtin(BLOCK_SIZE);
+    bool reverse = true;
+    for (auto level_index = log_block_size; level_index < log_n; ++level_index, reverse = !reverse) {
+      chunk_count = merge_chunk_list<count_per_vector>(chunk_list, chunk_count, reverse);
+    }
+  }
+
+  auto merge_end = std::chrono::high_resolution_clock::now();
 
   auto& merged_chunk = chunk_list.front();
   output_ptr = merged_chunk.input;
   input_ptr = merged_chunk.output;
+  return {std::chrono::duration_cast<std::chrono::milliseconds>(sort_chunk_end - sort_chunk_start).count(),
+          std::chrono::duration_cast<std::chrono::milliseconds>(merge_end - merge_start).count()};
 }
 }  // namespace hyrise::simd_sort

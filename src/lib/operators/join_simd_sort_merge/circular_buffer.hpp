@@ -64,7 +64,7 @@ inline void CircularBuffer::write(const size_t buffer_size, auto&& write_func) {
     return;
   }
   DebugAssert(_fill_count < buffer_size, "Wrote to full buffer");
-  auto first_chunk = BufferChunk{_head, (_tail > _head) ? _tail : buffer_size};
+  auto first_chunk = BufferChunk{.start = _head, .end = (_tail > _head) ? _tail : buffer_size};
 
   if (first_chunk.size()) {
     auto written_slots = write_func(std::span(_buffer + first_chunk.start, first_chunk.size()));
@@ -73,7 +73,7 @@ inline void CircularBuffer::write(const size_t buffer_size, auto&& write_func) {
   }
 
   if (_fill_count < buffer_size && _head == 0 && _head < _tail) {
-    auto second_chunk = BufferChunk{0, _tail};
+    auto second_chunk = BufferChunk{.start = 0, .end = _tail};
     auto written_slots = write_func(std::span(_buffer, second_chunk.size()));
     DebugAssert(written_slots <= second_chunk.size(), "Wrote more slots than available.");
     _update_head(written_slots, buffer_size);
@@ -84,7 +84,7 @@ inline void CircularBuffer::read(const size_t buffer_size, auto&& read_func) {
   if (_tail == _head && empty()) {
     return;
   }
-  auto read_chunk = BufferChunk{_tail, (_tail < _head) ? _head : buffer_size};
+  auto read_chunk = BufferChunk{.start = _tail, .end = (_tail < _head) ? _head : buffer_size};
   if (!read_chunk.size()) {
     return;
   }

@@ -74,48 +74,71 @@ void benchmark(size_t scale, std::ofstream& result, size_t cores = 1) {
 
   const auto num_items = scale * base_num_items;
 
+  const auto leaf_count = num_items / BLOCK_SIZE;
+  const auto leaf_size = BLOCK_SIZE;
+
   const auto num_warmup_runs = size_t{2};
   const auto num_iterations = size_t{4};
 
-  // auto times = std::vector<size_t>{};
-  // times.reserve(num_iterations);
+  auto times = std::vector<size_t>{};
+  times.reserve(num_iterations);
 
   for (auto it = size_t{0}; it < num_warmup_runs + num_iterations; ++it) {
     std::cout << "iteration: " << it << std::endl;
     std::mt19937 gen(42);
 
-    auto input_a = simd_sort::simd_vector<SimdElement>(num_items);
-    auto input_b = simd_sort::simd_vector<SimdElement>(num_items);
-    auto output = simd_sort::simd_vector<SimdElement>(2 * num_items);
+    // Create input and output vector of size leaf_count * leaf_size
+    const auto total_size = leaf_count * leaf_size;
+    auto input_simd_merge = simd_sort::simd_vector<SimdElement>(total_size);
+    auto output_simd_merge = simd_sort::simd_vector<SimdElement>(total_size);
 
-    generate_leaf<T>(input_a, gen);
-    generate_leaf<T>(input_b, gen);
+    auto chunk_list = std::vector<simd_sort::DataChunk<T>>(leaf_count);
 
-    auto merge_path_a = std::span(reinterpret_cast<T*>(input_a.data()), num_items);
-    auto merge_path_b = std::span(reinterpret_cast<T*>(input_b.data()), num_items);
-    auto merge_path_o = std::span(reinterpret_cast<T*>(output.data()), 2 * num_items);
+    for (auto offset = size_t{0}, leaf_index = size_t{0}; offset < total_size; offset += leaf_size, ++leaf_index) {
+      auto* input_begin = input_simd_merge.data() + offset;
+      generate_leaf<T>(std::span(input_begin, leaf_size), gen);
 
-    auto start_simd = std::chrono::high_resolution_clock::now();
-    auto merge_path = merge_path::MergePath<count_per_vector(), T>(merge_path_a, merge_path_b, cores);
-    merge_path.merge(merge_path_o);
-    auto end_simd = std::chrono::high_resolution_clock::now();
+      // Create chunk for SIMD Merging.
+      auto& chunk = chunk_list[leaf_index];
+      chunk.input = reinterpret_cast<T*>(input_begin);
+      chunk.output = reinterpret_cast<T*>(output_simd_merge.data() + offset);
+      chunk.size = leaf_size;
+    }
 
-    do_not_optimize_away(output);
-    auto execution_time = duration_cast<std::chrono::nanoseconds>(end_simd - start_simd).count();
+    auto execution_time = size_t{};
+    if constexpr (option == Option::Seq) {
+      auto start_simd = std::chrono::high_resolution_clock::now();
+      auto* output = merge_using_simd_merge(chunk_list);
+      auto end_simd = std::chrono::high_resolution_clock::now();
+      do_not_optimize_away(output);
+      execution_time = duration_cast<std::chrono::nanoseconds>(end_simd - start_simd).count();
+
+    } else if constexpr (option == Option::Par) {
+      auto start_simd = std::chrono::high_resolution_clock::now();
+      auto* output = simd_merge_parallel<count_per_vector(), false, T>(chunk_list, cores);
+      auto end_simd = std::chrono::high_resolution_clock::now();
+      do_not_optimize_away(output);
+      execution_time = duration_cast<std::chrono::nanoseconds>(end_simd - start_simd).count();
+
+    } else {
+      auto start_simd = std::chrono::high_resolution_clock::now();
+      auto* output = simd_merge_parallel<count_per_vector(), true, T>(chunk_list, cores);
+      auto end_simd = std::chrono::high_resolution_clock::now();
+      do_not_optimize_away(output);
+      execution_time = duration_cast<std::chrono::nanoseconds>(end_simd - start_simd).count();
+    }
 
     if (it < num_warmup_runs) {
       continue;
     }
 
-    std::cout << scale << "," << it << "," << execution_time << std::endl;
-
-    // times.push_back(execution_time);
+    times.push_back(execution_time);
   }
 
-  // const auto total_duration = std::accumulate(times.begin(), times.end(), 0ul);
-  // const auto avg_time = total_duration / num_iterations;
-  //
-  // result << scale << "," << avg_time << std::endl;
+  const auto total_duration = std::accumulate(times.begin(), times.end(), 0ul);
+  const auto avg_time = total_duration / num_iterations;
+
+  result << scale << "," << avg_time << std::endl;
 }
 
 void run_sequential() {
@@ -142,21 +165,36 @@ int main() {
   const auto world = pmr_string{"Experiment with SIMD Merge "};
   std::cout << "Playround: " << world << "!\n";
 
+  std::cout << "L2_CACHE_SIZE: " << L2_SIZE << std::endl;
+
+  run_sequential();
+
   std::cout << "count_per_vector: " << count_per_vector() << std::endl;
 
-  const auto max_cores = 16;
-  for (auto cores = size_t{2}; cores <= max_cores; cores += 2) {
-    std::string file_name = std::to_string(cores) + "_par_mp.csv";
-    std::ofstream out_file;
-    out_file.open(file_name, std::ios::app);
+  const auto max_cores = 8;
+  for (auto cores = size_t{2}; cores <= max_cores; cores *= 2) {
+    std::string file_name_par = std::to_string(cores) + "_par.csv";
+    std::ofstream file_par;
+    file_par.open(file_name_par, std::ios::app);
+
+    std::string file_name_par_mp = std::to_string(cores) + "_par_mp.csv";
+    std::ofstream file_par_mp;
+    file_par.open(file_name_par_mp, std::ios::app);
 
     // Check if file opened successfully
-    if (!out_file.is_open()) {
-      std::cerr << "Error: Could not open file " << file_name << '\n';
+    if (!file_par.is_open()) {
+      std::cerr << "Error: Could not open file " << file_name_par << '\n';
       return -1;
     }
 
-    out_file << "scale,run,time" << std::endl;
+    // Check if file opened successfully
+    if (!file_par_mp.is_open()) {
+      std::cerr << "Error: Could not open file " << file_name_par_mp << '\n';
+      return -1;
+    }
+
+    file_par << "scale,time" << std::endl;
+    file_par_mp << "scale,time" << std::endl;
 
     Hyrise::get().topology.use_default_topology(cores);
     std::cout << "- Multi-threaded Topology:\n";
@@ -166,11 +204,13 @@ int main() {
     Hyrise::get().set_scheduler(scheduler);
 
     for (auto scale = size_t{1}; scale <= 256; scale *= 2) {
-      benchmark<int64_t, Option::ParMergePath>(scale, out_file, cores);
+      benchmark<int64_t, Option::Par>(scale, file_par, cores);
+      benchmark<int64_t, Option::ParMergePath>(scale, file_par, cores);
     }
 
     Hyrise::get().scheduler()->finish();
-    out_file.close();
+    file_par.close();
+    file_par_mp.close();
   }
 
   Hyrise::get().set_scheduler(std::make_shared<ImmediateExecutionScheduler>());

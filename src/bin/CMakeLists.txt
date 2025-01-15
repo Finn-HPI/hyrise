@@ -18,6 +18,12 @@ add_executable(
 )
 
 add_executable(
+    hyrisePartitionAndSort
+
+    partition_and_sort.cpp
+)
+
+add_executable(
     hyriseSIMDMergeTest
     simd_sort_test.cpp
 )
@@ -34,6 +40,12 @@ add_executable(
 
 target_link_libraries(
     hyrisePlayground
+    hyrise
+    hyriseBenchmarkLib
+)
+
+target_link_libraries(
+    hyrisePartitionAndSort
     hyrise
     hyriseBenchmarkLib
 )
