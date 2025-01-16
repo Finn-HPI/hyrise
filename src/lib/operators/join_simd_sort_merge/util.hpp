@@ -20,7 +20,16 @@ constexpr auto CACHE_LINE_SIZE = std::size_t{128};
 constexpr auto CACHE_LINE_SIZE = std::size_t{64};
 #endif
 constexpr auto TUPLES_PER_CACHELINE = CACHE_LINE_SIZE / 8;
+
+// Select number of cache lines depending on underlying hardware
+#if defined(__arm__)
+constexpr auto NUM_CACHE_LINES = 4;
+#elif defined(__powerpc__) || defined(__ppc__) || defined(__PPC__)
 constexpr auto NUM_CACHE_LINES = 1;
+#else
+constexpr auto NUM_CACHE_LINES = 2;
+#endif
+
 constexpr auto BUFFER_SIZE = TUPLES_PER_CACHELINE * NUM_CACHE_LINES;
 
 }  // namespace radix_partition
