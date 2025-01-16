@@ -190,7 +190,7 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
         _primary_predicate_condition{op},
         _mode{mode},
         _num_cpus{Hyrise::get().topology.num_cpus()},
-        _cluster_count(std::bit_floor(_num_cpus)),
+        _cluster_count{std::bit_floor(_num_cpus)},
         _secondary_join_predicates{secondary_join_predicates} {
     _output_pos_lists_left.resize(_cluster_count);
     _output_pos_lists_right.resize(_cluster_count);
@@ -652,8 +652,9 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
   template <typename SortingType, OperatorSteps partition_step, OperatorSteps sort_buckets_step>
   std::vector<SimdElementList> _sort_relation(SimdElementList& simd_elements) {
     auto timer = Timer{};
+    constexpr auto MIN_PARTITION_ELEMENTS = 1048576;
 
-    const auto chunk_count = _num_cpus;
+    const auto chunk_count = std::max(size_t{1}, static_cast<size_t>(simd_elements.size() / MIN_PARTITION_ELEMENTS));
     auto chunks = std::move(_split_vector_into_spans(simd_elements, chunk_count));
 
     auto partition_storage = std::vector<SimdElementList>(chunk_count);
@@ -687,9 +688,24 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
       radix_partition.execute(partition_storage[chunk_index], chunk_working_memory);
 
       // After partitioning, we sort each bucket using SIMD sort.
+      // if (chunk_count < _num_cpus / 2) {
+      //   auto jobs = std::vector<std::shared_ptr<AbstractTask>>{};
+      //   for (auto bucket_index = size_t{0}; bucket_index < _cluster_count; ++bucket_index) {
+      //     if (radix_partition.bucket(bucket_index).size <= JOB_SPAWN_THRESHOLD) {
+      //       sort_bucket(bucket_index, radix_partition, chunk_working_memory);
+      //     } else {
+      //       jobs.push_back(
+      //           std::make_shared<JobTask>([&sort_bucket, bucket_index, &radix_partition, &chunk_working_memory] {
+      //             sort_bucket(bucket_index, radix_partition, chunk_working_memory);
+      //           }));
+      //     }
+      //   }
+      //   Hyrise::get().scheduler()->schedule_and_wait_for_tasks(jobs);
+      // } else {
       for (auto bucket_index = size_t{0}; bucket_index < _cluster_count; ++bucket_index) {
         sort_bucket(bucket_index, radix_partition, chunk_working_memory);
       }
+      // }
     };
 
     auto jobs = std::vector<std::shared_ptr<AbstractTask>>{};
