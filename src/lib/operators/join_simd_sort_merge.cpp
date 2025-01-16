@@ -70,9 +70,10 @@ struct Data32BitCompression<double> {
 template <>
 struct Data32BitCompression<int64_t> {
   static uint32_t compress(int64_t& value, const int64_t& min_value, const int64_t& max_value) {
-    static constexpr auto MAX_ALLOWED_DIFFERENCE = std::numeric_limits<uint32_t>::max();
+    static constexpr auto MAX_ALLOWED_DIFFERENCE = std::numeric_limits<int32_t>::max();
     if (max_value - min_value <= MAX_ALLOWED_DIFFERENCE) {
-      return Data32BitCompression<uint32_t>::compress(value - min_value, 0, max_value - min_value);
+      return Data32BitCompression<int32_t>::compress(static_cast<int32_t>(value - min_value), 0,
+                                                     static_cast<int32_t>(max_value - min_value));
     }
     auto unsigned_value = static_cast<uint64_t>(value);
     const auto high = static_cast<uint32_t>(unsigned_value >> 32u);
