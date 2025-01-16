@@ -887,7 +887,7 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
  public:
   std::shared_ptr<const Table> _on_execute() override {
     if constexpr (HYRISE_DEBUG) {
-      std::cout << "Execute JoinSimdSortMerge" << '\n';
+      std::cout << "Execute JoinSimdSortMerge: L2-Cache = " << L2_SIZE << '\n';
       std::cout << "cpus: " << _num_cpus << ", cluster count: " << _cluster_count << '\n';
     }
 

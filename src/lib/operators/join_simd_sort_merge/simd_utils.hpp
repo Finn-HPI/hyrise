@@ -10,15 +10,11 @@
 
 #include <boost/align/aligned_allocator.hpp>
 
-#ifndef L2_CACHE_SIZE
-#define L2_CACHE_SIZE 1048576  // Default value (1024KiB)
-#endif
-
 #ifndef SYSTEM_L2_CACHE_SIZE
-constexpr auto L2_SIZE = 1;
+constexpr auto L2_SIZE = 1048576;  // 1024 KiB (default)
 #else
 constexpr auto L2_SIZE = SYSTEM_L2_CACHE_SIZE;
-#endif  // !SYSTEM_L2_CACHE_SIZE
+#endif
 
 namespace hyrise::simd_sort {
 
@@ -35,7 +31,7 @@ using simd_vector = aligned_vector<T, 64>;
 
 template <typename T>
 constexpr std::size_t block_size() {
-  return L2_CACHE_SIZE / (2 * sizeof(T));
+  return L2_SIZE / (2 * sizeof(T));
 }
 
 template <std::size_t reg_size, typename T>

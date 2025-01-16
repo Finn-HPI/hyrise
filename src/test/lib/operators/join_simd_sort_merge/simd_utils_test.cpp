@@ -127,7 +127,7 @@ TYPED_TEST(SimdUtilsTest, SimdCopy) {
 }
 
 TYPED_TEST(SimdUtilsTest, SortBlockSize) {
-  EXPECT_EQ(block_size<TypeParam>() * sizeof(TypeParam), L2_CACHE_SIZE / 2);
+  EXPECT_EQ(block_size<TypeParam>() * sizeof(TypeParam), L2_SIZE / 2);
 }
 
 TYPED_TEST(SimdUtilsTest, MultiVec) {

@@ -146,7 +146,7 @@ class MultiwayMerger {
 
     // Setup buffers for innner nodes.
     constexpr auto CACHE_USAGE = 0.9;
-    constexpr auto AVAILABLE_L2_CACHE = static_cast<size_t>(L2_CACHE_SIZE * CACHE_USAGE);
+    constexpr auto AVAILABLE_L2_CACHE = static_cast<size_t>(L2_SIZE * CACHE_USAGE);
 
     _buffer_size = (2 * AVAILABLE_L2_CACHE / sizeof(SimdElement)) / count_non_done_inner_nodes;
     _read_threshold = _buffer_size / 2;
