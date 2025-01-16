@@ -42,8 +42,18 @@ class JoinSimdSortMerge : public AbstractJoinOperator {
   static constexpr auto JOB_SPAWN_THRESHOLD = 500;
 
  protected:
-  // Datatype used for simd sorting (has to be 64 bits).
+// Datatype used for simd sorting (has to be 64 bits).
+#if defined(__AVX512F__)
+  using SortingType = int64_t;
+#elif defined(__AVX2__)
+  using SortingType = int64_t;
+#elif defined(__powerpc__) || defined(__ppc__) || defined(_ARCH_PPC)
+  using SortingType = int64_t;
+#elif defined(__arm__) || defined(__aarch64__)
   using SortingType = double;
+#else
+  using SortingType = double;
+#endif
 
   std::shared_ptr<const Table> _on_execute() override;
   void _on_cleanup() override;
