@@ -5,12 +5,12 @@
 #include <boost/unordered/unordered_flat_set.hpp>
 
 #include "operators/join_helper/join_output_writing.hpp"
+#include "operators/join_simd_sort_merge/column_materializer.hpp"
 #include "operators/join_simd_sort_merge/k_way_merge.hpp"
 #include "operators/join_simd_sort_merge/multiway_merging.hpp"
 #include "operators/join_simd_sort_merge/radix_partitioning.hpp"
 #include "operators/join_simd_sort_merge/simd_sort.hpp"
 #include "operators/join_simd_sort_merge/simd_utils.hpp"
-#include "operators/join_sort_merge/column_materializer.hpp"
 #include "operators/multi_predicate_join/multi_predicate_join_evaluator.hpp"
 #include "utils/timer.hpp"
 
@@ -731,27 +731,28 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
     return sorted_clusters;
   }
 
-  template <typename T, JoinSimdSortMerge::OperatorSteps materialize_step,
-            JoinSimdSortMerge::OperatorSteps transform_step>
-  void _materialize_column_and_transform_to_simd_format(const std::shared_ptr<const Table> table,
-                                                        const ColumnID column_id, std::vector<T>& materialized_values,
-                                                        RowIDPosList& row_ids, SimdElementList& simd_element_list,
-                                                        RowIDPosList& null_values, const bool materialize_null) {
+  template <typename T, JoinSimdSortMerge::OperatorSteps materialize_step>
+  std::pair<T, T> _materialize_column(const std::shared_ptr<const Table> table, const ColumnID column_id,
+                                      MaterializedSegmentList<T>& materialized_segment_list, RowIDPosList& null_values,
+                                      const bool materialize_null) {
     auto timer = Timer{};
-    auto left_column_materializer = ColumnMaterializer<T>(false, materialize_null);
-    auto [materialized_segments, null_rows, samples] = left_column_materializer.materialize(table, column_id);
+    auto left_column_materializer = SMJColumnMaterializer<T>(materialize_null);
+    auto [materialized_segments, null_rows, min_value, max_value] =
+        std::move(left_column_materializer.materialize(table, column_id));
 
-    // auto left_column_materializer = SMJColumnMaterializer<T>(JoinSimdSortMerge::JOB_SPAWN_THRESHOLD);
-    // auto [materialized_segments, min_value, max_value, null_rows] =
-    //     left_column_materializer.materialize(table, column_id, materialize_null);
     null_values = std::move(null_rows);
-
+    materialized_segment_list = std::move(materialized_segments);
     _performance.set_step_runtime(materialize_step, timer.lap());
 
-    simd_element_list.reserve(materialized_segments.size());
+    return {min_value, max_value};
+  }
 
-    auto min_value = std::numeric_limits<T>::lowest();
-    auto max_value = std::numeric_limits<T>::max();
+  template <typename T, JoinSimdSortMerge::OperatorSteps transform_step>
+  void _transform_to_simd_format(MaterializedSegmentList<T>& materialized_segments, std::vector<T>& materialized_values,
+                                 RowIDPosList& row_ids, SimdElementList& simd_element_list, T min_value, T max_value) {
+    auto timer = Timer{};
+
+    simd_element_list.reserve(materialized_segments.size());
 
     auto index = size_t{0};
     for (auto& segment : materialized_segments) {
@@ -896,13 +897,25 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
 
     using enum OperatorSteps;
 
-    _materialize_column_and_transform_to_simd_format<ColumnType, LeftSideMaterialize, LeftSideTransform>(
-        _left_input_table, _primary_left_column_id, _materialized_values_left, _row_ids_left, _simd_elements_left,
-        _null_rows_left, include_null_left);
+    auto materialized_segments_left = MaterializedSegmentList<ColumnType>{};
+    auto materialized_segments_right = MaterializedSegmentList<ColumnType>{};
 
-    _materialize_column_and_transform_to_simd_format<ColumnType, RightSideMaterialize, RightSideTransform>(
-        _right_input_table, _primary_right_column_id, _materialized_values_right, _row_ids_right, _simd_elements_right,
-        _null_rows_right, include_null_right);
+    const auto [min_left, max_left] = _materialize_column<ColumnType, LeftSideMaterialize>(
+        _left_input_table, _primary_left_column_id, materialized_segments_left, _null_rows_left, include_null_left);
+
+    const auto [min_right, max_right] = _materialize_column<ColumnType, RightSideMaterialize>(
+        _right_input_table, _primary_right_column_id, materialized_segments_right, _null_rows_right,
+        include_null_right);
+
+    const auto min_value = std::min(min_left, min_right);
+    const auto max_value = std::max(max_left, max_right);
+
+    _transform_to_simd_format<ColumnType, LeftSideTransform>(materialized_segments_left, _materialized_values_left,
+                                                             _row_ids_left, _simd_elements_left, min_value, max_value);
+
+    _transform_to_simd_format<ColumnType, RightSideTransform>(materialized_segments_right, _materialized_values_right,
+                                                              _row_ids_right, _simd_elements_right, min_value,
+                                                              max_value);
 
     _sorted_per_hash_left =
         std::move(_sort_relation<SortingType, LeftSidePartition, LeftSideSortBuckets>(_simd_elements_left));

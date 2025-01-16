@@ -27,10 +27,7 @@ constexpr auto BUFFER_SIZE = TUPLES_PER_CACHELINE * NUM_CACHE_LINES;
 
 constexpr auto THREAD_COUNT = 8;
 
-enum class ExecutionStrategy : std::uint8_t {
-  SEQUENTIAL,
-  PARALLEL,
-};
+enum class ExecutionStrategy : std::uint8_t { SEQUENTIAL, PARALLEL, ParallelWithMergePath };
 
 struct SimdElement {
   uint32_t index;
