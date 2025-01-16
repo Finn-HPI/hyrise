@@ -673,7 +673,7 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
       DebugAssert((simd_sort::is_simd_aligned<SortingType, 64>(input_pointer)), "Input not cache aligned.");
       DebugAssert((simd_sort::is_simd_aligned<SortingType, 64>(output_pointer)), "Output not cache aligned.");
 
-      simd_sort::sort<count_per_vector>(input_pointer, output_pointer, bucket.size);
+      simd_sort::sort<count_per_vector, SortingType>(input_pointer, output_pointer, bucket.size);
       bucket.data = reinterpret_cast<SimdElement*>(output_pointer);
     };
 
