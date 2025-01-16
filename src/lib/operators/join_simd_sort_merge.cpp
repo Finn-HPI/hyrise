@@ -188,8 +188,8 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
         _primary_right_column_id{right_column_id},
         _primary_predicate_condition{op},
         _mode{mode},
-        _cluster_count(_determine_number_of_clusters()),
         _num_cpus{Hyrise::get().topology.num_cpus()},
+        _cluster_count(std::bit_floor(_num_cpus)),
         _secondary_join_predicates{secondary_join_predicates} {
     _output_pos_lists_left.resize(_cluster_count);
     _output_pos_lists_right.resize(_cluster_count);
@@ -209,8 +209,8 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
   const PredicateCondition _primary_predicate_condition;
   const JoinMode _mode;
 
-  size_t _cluster_count;
   size_t _num_cpus;
+  size_t _cluster_count;
 
   std::vector<ColumnType> _materialized_values_left;
   std::vector<ColumnType> _materialized_values_right;
@@ -268,7 +268,7 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
     // as TLB misses during clustering become too expensive (see "An Experimental Comparison of Thirteen Relational
     // Equi-Joins in Main Memory" by Schuh et al.).
     return static_cast<size_t>(std::pow(
-        2, std::max(8.0, std::floor(std::log2(std::max({size_t{1}, cluster_count_left, cluster_count_right}))))));
+        2, std::min(8.0, std::floor(std::log2(std::max({size_t{1}, cluster_count_left, cluster_count_right}))))));
   }
 
   struct PotentialMatchRange {
@@ -658,8 +658,8 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
     auto partition_storage = std::vector<SimdElementList>(chunk_count);
     auto working_memory = std::vector<SimdElementList>(chunk_count);
 
-    [[maybe_unused]] auto sort_bucket = [](size_t bucket_index, RadixPartition<ColumnType>& radix_partition,
-                                           SimdElementList& chunk_working_memory) {
+    auto sort_bucket = [](size_t bucket_index, RadixPartition<ColumnType>& radix_partition,
+                          SimdElementList& chunk_working_memory) {
       auto& bucket = radix_partition.bucket(bucket_index);
       if (!bucket.size) {
         return;
@@ -887,7 +887,8 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
  public:
   std::shared_ptr<const Table> _on_execute() override {
     if constexpr (HYRISE_DEBUG) {
-      std::cout << "Execute JoinSimdSortMerge: cluster_count: " << _cluster_count << '\n';
+      std::cout << "Execute JoinSimdSortMerge" << '\n';
+      std::cout << "cpus: " << _num_cpus << ", cluster count: " << _cluster_count << '\n';
     }
 
     const auto include_null_left = (_mode == JoinMode::Left || _mode == JoinMode::FullOuter);
