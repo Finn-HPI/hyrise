@@ -63,10 +63,8 @@ class SMJColumnMaterializer {
 
       auto materialize_job = [&, chunk_id] {
         const auto& segment = input->get_chunk(chunk_id)->get_segment(column_id);
-        auto [materialized_segment, min_max] =
+        std::tie(output[chunk_id], min_max_values[chunk_id]) =
             std::move(_materialize_segment(segment, chunk_id, null_rows_per_chunk[chunk_id]));
-        output[chunk_id] = std::move(materialized_segment);
-        min_max_values[chunk_id] = std::move(min_max);
       };
 
       if (chunk_size > _job_spawn_threshold) {
@@ -125,7 +123,7 @@ class SMJColumnMaterializer {
           null_rows_output.emplace_back(chunk_id, position.chunk_offset());
         }
       } else {
-        auto value = position.value();
+        auto& value = position.value();
         output.emplace_back(chunk_id, position.chunk_offset(), value);
         if constexpr (std::is_same_v<T, int64_t>) {
           if (value < min) {
