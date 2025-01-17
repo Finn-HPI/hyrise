@@ -35,6 +35,7 @@ class JoinSimdSortMerge : public AbstractJoinOperator {
     RightSideSortBuckets,
     // LeftSideMultiwayMerging,
     // RightSideMultiwayMerging,
+    GatherRowIds,
     FindJoinPartner,
     OutputWriting
   };

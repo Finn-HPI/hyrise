@@ -70,10 +70,10 @@ struct Data32BitCompression<double> {
 template <>
 struct Data32BitCompression<int64_t> {
   static uint32_t compress(int64_t& value, const int64_t& min_value, const int64_t& max_value) {
-    static constexpr auto MAX_ALLOWED_DIFFERENCE = std::numeric_limits<int32_t>::max();
+    static constexpr auto MAX_ALLOWED_DIFFERENCE = std::numeric_limits<uint32_t>::max();
     if (max_value - min_value <= MAX_ALLOWED_DIFFERENCE) {
-      return Data32BitCompression<int32_t>::compress(static_cast<int32_t>(value - min_value), 0,
-                                                     static_cast<int32_t>(max_value - min_value));
+      return Data32BitCompression<uint32_t>::compress(static_cast<uint32_t>(value - min_value), 0,
+                                                      static_cast<uint32_t>(max_value - min_value));
     }
     auto unsigned_value = static_cast<uint64_t>(value);
     const auto high = static_cast<uint32_t>(unsigned_value >> 32u);
@@ -190,7 +190,7 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
         _primary_predicate_condition{op},
         _mode{mode},
         _num_cpus{Hyrise::get().topology.num_cpus()},
-        _cluster_count{std::bit_floor(_num_cpus)},
+        _cluster_count{256},
         _secondary_join_predicates{secondary_join_predicates} {
     _output_pos_lists_left.resize(_cluster_count);
     _output_pos_lists_right.resize(_cluster_count);
@@ -652,9 +652,10 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
   template <typename SortingType, OperatorSteps partition_step, OperatorSteps sort_buckets_step>
   std::vector<SimdElementList> _sort_relation(SimdElementList& simd_elements) {
     auto timer = Timer{};
-    constexpr auto MIN_PARTITION_ELEMENTS = 1048576;
+    [[maybe_unused]] constexpr auto MIN_PARTITION_ELEMENTS = 1048576;
 
-    const auto chunk_count = std::max(size_t{1}, static_cast<size_t>(simd_elements.size() / MIN_PARTITION_ELEMENTS));
+    // const auto chunk_count = std::max(size_t{1}, static_cast<size_t>(simd_elements.size() / MIN_PARTITION_ELEMENTS));
+    const auto chunk_count = 1;
     auto chunks = std::move(_split_vector_into_spans(simd_elements, chunk_count));
 
     auto partition_storage = std::vector<SimdElementList>(chunk_count);
@@ -771,17 +772,41 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
 
     simd_element_list.reserve(materialized_segments.size());
 
-    auto index = size_t{0};
-    for (auto& segment : materialized_segments) {
+    auto total_size = std::accumulate(materialized_segments.begin(), materialized_segments.end(), size_t{0},
+                                      [](size_t sum, auto& segment) {
+                                        return std::move(sum) + segment.size();
+                                      });
+
+    DebugAssert(total_size <= std::numeric_limits<uint32_t>::max(), "Index has to fit into 32 bits. ");
+    simd_element_list.resize(total_size);
+    materialized_values.resize(total_size);
+    row_ids.resize(total_size);
+
+    auto transform_segment = [&](const size_t start_index, std::span<MaterializedValue<T>> segment) {
+      auto index = start_index;
       for (auto& materialized_value : segment) {
         const auto sorting_key = Data32BitCompression<T>::compress(materialized_value.value, min_value, max_value);
-        simd_element_list.emplace_back(static_cast<uint32_t>(index), sorting_key);
-        materialized_values.push_back(std::move(materialized_value.value));
-        row_ids.push_back(std::move(materialized_value.row_id));
+        simd_element_list[index] = SimdElement{static_cast<uint32_t>(index), sorting_key};
+        materialized_values[index] = std::move(materialized_value.value);
+        row_ids[index] = std::move(materialized_value.row_id);
         ++index;
       }
+    };
+
+    auto jobs = std::vector<std::shared_ptr<AbstractTask>>{};
+
+    auto index = size_t{0};
+    for (auto& segment : materialized_segments) {
+      if (segment.size() > JOB_SPAWN_THRESHOLD) {
+        jobs.push_back(std::make_shared<JobTask>([&, index]() {
+          transform_segment(index, std::span<MaterializedValue<T>>(segment));
+        }));
+      } else {
+        transform_segment(index, segment);
+      }
+      index += segment.size();
     }
-    DebugAssert(index <= std::numeric_limits<uint32_t>::max(), "Index has to fit into 32 bits. ");
+    Hyrise::get().scheduler()->schedule_and_wait_for_tasks(jobs);
 
     _performance.set_step_runtime(transform_step, timer.lap());
   }
@@ -948,6 +973,7 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
     _gather_row_ids_and_values_according_to_sorted_simd_data(_sorted_per_hash_right, _materialized_values_right,
                                                              _row_ids_right, _sorted_values_right,
                                                              _sorted_row_ids_right);
+    _performance.set_step_runtime(GatherRowIds, timer.lap());
 
     _perform_join();
 
