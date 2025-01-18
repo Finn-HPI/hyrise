@@ -5,8 +5,9 @@
 #include <boost/unordered/unordered_flat_set.hpp>
 
 #include "operators/join_helper/join_output_writing.hpp"
-#include "operators/join_simd_sort_merge/column_materializer.hpp"
+#include "operators/join_simd_sort_merge/smj_column_materializer.hpp"
 #include "operators/join_simd_sort_merge/k_way_merge.hpp"
+// #include "operators/join_sort_merge/column_materializer.hpp"
 #include "operators/join_simd_sort_merge/multiway_merging.hpp"
 #include "operators/join_simd_sort_merge/radix_partitioning.hpp"
 #include "operators/join_simd_sort_merge/simd_sort.hpp"
@@ -190,7 +191,6 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
         _primary_predicate_condition{op},
         _mode{mode},
         _num_cpus{Hyrise::get().topology.num_cpus()},
-        _cluster_count{256},
         _secondary_join_predicates{secondary_join_predicates} {
     _output_pos_lists_left.resize(_cluster_count);
     _output_pos_lists_right.resize(_cluster_count);
@@ -211,17 +211,10 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
   const JoinMode _mode;
 
   size_t _num_cpus;
-  size_t _cluster_count;
-
-  std::vector<ColumnType> _materialized_values_left;
-  std::vector<ColumnType> _materialized_values_right;
-  RowIDPosList _row_ids_left;
-  RowIDPosList _row_ids_right;
+  size_t _cluster_count{256};
 
   std::vector<simd_sort::simd_vector<ColumnType>> _sorted_values_left;
   std::vector<simd_sort::simd_vector<ColumnType>> _sorted_values_right;
-  std::vector<simd_sort::simd_vector<RowID>> _sorted_row_ids_left;
-  std::vector<simd_sort::simd_vector<RowID>> _sorted_row_ids_right;
 
   // Contains the null value row ids if a join column is an outer join column.
   RowIDPosList _null_rows_left;
@@ -274,26 +267,24 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
 
   struct PotentialMatchRange {
     PotentialMatchRange(std::size_t init_start_index, std::size_t init_end_index, std::span<SimdElement> init_elements,
-                        std::span<ColumnType> init_values, std::span<RowID> init_row_ids)
+                        std::span<ColumnType> init_values)
         : start_index(init_start_index),
           end_index(init_end_index),
-          elements(init_elements),
-          values(init_values.data() + init_start_index, init_values.data() + init_end_index),
-          row_ids(init_row_ids.data() + init_start_index, init_row_ids.data() + init_end_index) {}
+          elements(init_elements.data() + init_start_index, init_elements.data() + init_end_index),
+          values(init_values.data() + init_start_index, init_values.data() + init_end_index) {}
 
     std::size_t start_index;
     std::size_t end_index;
     std::span<SimdElement> elements;
     std::span<ColumnType> values;
-    std::span<RowID> row_ids;
 
    public:
     // Executes the given action for every row id of the table in this range.
     void for_every_row_id(auto&& action) const {
-      const auto num_items = row_ids.size();
+      const auto num_items = elements.size();
       for (auto index = size_t{0}; index < num_items; ++index) {
         DebugAssert(values.size() > index || IS_LOSSLESS_COMPRESSION, "Values has broken size.");
-        const auto& row_id = row_ids[index];
+        const auto& row_id = _unpack_row_id(elements[index].index);
         if constexpr (requires { action(row_id); }) {
           action(row_id);
         } else {
@@ -545,8 +536,7 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
   // Currently we only support Inner, Equi-Joins.
   void _join_per_hash(std::size_t bucket_index, std::span<SimdElement> left_elements,
                       std::span<SimdElement> right_elements, std::span<ColumnType> left_values,
-                      std::span<ColumnType> right_values, std::span<RowID> left_row_ids,
-                      std::span<RowID> right_row_ids) {
+                      std::span<ColumnType> right_values) {
     auto multi_predicate_join_evaluator = std::optional<MultiPredicateJoinEvaluator>{};
     if (!_secondary_join_predicates.empty()) {
       multi_predicate_join_evaluator.emplace(*_sort_merge_join._left_input->get_output(),
@@ -569,10 +559,8 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
 
       const auto compare_result = _compare(left_value, right_value);
 
-      const auto left_range =
-          PotentialMatchRange(left_run_start, left_run_end, left_elements, left_values, left_row_ids);
-      const auto right_range =
-          PotentialMatchRange(right_run_start, right_run_end, right_elements, right_values, right_row_ids);
+      const auto left_range = PotentialMatchRange(left_run_start, left_run_end, left_elements, left_values);
+      const auto right_range = PotentialMatchRange(right_run_start, right_run_end, right_elements, right_values);
 
       _find_matches_in_ranges(left_range, right_range, compare_result, multi_predicate_join_evaluator, bucket_index);
 
@@ -600,10 +588,8 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
       }
     }
 
-    const auto left_remainder =
-        PotentialMatchRange(left_run_start, left_size, left_elements, left_values, left_row_ids);
-    const auto right_remainder =
-        PotentialMatchRange(right_run_start, right_size, right_elements, right_values, right_row_ids);
+    const auto left_remainder = PotentialMatchRange(left_run_start, left_size, left_elements, left_values);
+    const auto right_remainder = PotentialMatchRange(right_run_start, right_size, right_elements, right_values);
     if (left_run_start < left_size) {
       _find_matches_in_ranges(left_remainder, right_remainder, CompareResult::Less, multi_predicate_join_evaluator,
                               bucket_index);
@@ -621,13 +607,11 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
       if (merge_row_count > JOB_SPAWN_THRESHOLD) {
         jobs.push_back(std::make_shared<JobTask>([cluster_index, this]() {
           _join_per_hash(cluster_index, _sorted_per_hash_left[cluster_index], _sorted_per_hash_right[cluster_index],
-                         _sorted_values_left[cluster_index], _sorted_values_right[cluster_index],
-                         _sorted_row_ids_left[cluster_index], _sorted_row_ids_right[cluster_index]);
+                         _sorted_values_left[cluster_index], _sorted_values_right[cluster_index]);
         }));
       } else {
         _join_per_hash(cluster_index, _sorted_per_hash_left[cluster_index], _sorted_per_hash_right[cluster_index],
-                       _sorted_values_left[cluster_index], _sorted_values_right[cluster_index],
-                       _sorted_row_ids_left[cluster_index], _sorted_row_ids_right[cluster_index]);
+                       _sorted_values_left[cluster_index], _sorted_values_right[cluster_index]);
       }
     }
     Hyrise::get().scheduler()->schedule_and_wait_for_tasks(jobs);
@@ -655,7 +639,7 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
     [[maybe_unused]] constexpr auto MIN_PARTITION_ELEMENTS = 1048576;
 
     // const auto chunk_count = std::max(size_t{1}, static_cast<size_t>(simd_elements.size() / MIN_PARTITION_ELEMENTS));
-    const auto chunk_count = 1;
+    const auto chunk_count = 256;
     auto chunks = std::move(_split_vector_into_spans(simd_elements, chunk_count));
 
     auto partition_storage = std::vector<SimdElementList>(chunk_count);
@@ -755,19 +739,33 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
                                       const bool materialize_null) {
     auto timer = Timer{};
     auto left_column_materializer = SMJColumnMaterializer<T>(materialize_null);
-    auto [materialized_segments, null_rows, min_value, max_value] =
+    auto [materialized_segments, null_rows, min, max] =
         std::move(left_column_materializer.materialize(table, column_id));
 
     null_values = std::move(null_rows);
     materialized_segment_list = std::move(materialized_segments);
     _performance.set_step_runtime(materialize_step, timer.lap());
 
-    return {min_value, max_value};
+    return {min, max};
+  }
+
+  static uint32_t __attribute__((always_inline)) _pack_row_id(RowID& row_id) {
+    // Mask the 16 LSBs of each value.
+    uint32_t chunk_id_masked = row_id.chunk_id & 0xFFFFu;
+    uint32_t chunk_offset_masked = row_id.chunk_offset & 0xFFFFu;
+    // Combine the values into a single uint32_t.
+    return (chunk_id_masked << 16u) | chunk_offset_masked;
+  }
+
+  static RowID _unpack_row_id(uint32_t packed_row_id) {
+    ChunkID chunk_id = static_cast<ChunkID>((packed_row_id >> 16u) & 0xFFFFu);     // Extract the 16 MSBs
+    ChunkOffset chunk_offset = static_cast<ChunkOffset>(packed_row_id & 0xFFFFu);  // Extract the 16 LSBs
+    return {chunk_id, chunk_offset};
   }
 
   template <typename T, JoinSimdSortMerge::OperatorSteps transform_step>
-  void _transform_to_simd_format(MaterializedSegmentList<T>& materialized_segments, std::vector<T>& materialized_values,
-                                 RowIDPosList& row_ids, SimdElementList& simd_element_list, T min_value, T max_value) {
+  void _transform_to_simd_format(MaterializedSegmentList<T>& materialized_segments, SimdElementList& simd_element_list,
+                                 T min_value, T max_value) {
     auto timer = Timer{};
 
     simd_element_list.reserve(materialized_segments.size());
@@ -779,16 +777,12 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
 
     DebugAssert(total_size <= std::numeric_limits<uint32_t>::max(), "Index has to fit into 32 bits. ");
     simd_element_list.resize(total_size);
-    materialized_values.resize(total_size);
-    row_ids.resize(total_size);
 
     auto transform_segment = [&](const size_t start_index, std::span<MaterializedValue<T>> segment) {
       auto index = start_index;
       for (auto& materialized_value : segment) {
         const auto sorting_key = Data32BitCompression<T>::compress(materialized_value.value, min_value, max_value);
-        simd_element_list[index] = SimdElement{static_cast<uint32_t>(index), sorting_key};
-        materialized_values[index] = std::move(materialized_value.value);
-        row_ids[index] = std::move(materialized_value.row_id);
+        simd_element_list[index] = SimdElement{_pack_row_id(materialized_value.row_id), sorting_key};
         ++index;
       }
     };
@@ -811,116 +805,46 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
     _performance.set_step_runtime(transform_step, timer.lap());
   }
 
-  void _materialized_row_ids_and_values(const std::span<SimdElement> sorted_elements, const RowIDPosList& row_ids,
-                                        simd_sort::simd_vector<RowID>& output_row_ids,
-                                        const std::span<ColumnType> values [[maybe_unused]],
-                                        simd_sort::simd_vector<ColumnType>& output_values [[maybe_unused]]) {
-#ifdef __AVX512F__
-    static constexpr auto GATHER_SIZE = 8;
-#else
-    static constexpr auto GATHER_SIZE = 4;
-#endif
-    constexpr auto BATCH_SIZE = GATHER_SIZE * 8;
-
-    constexpr auto ALIGNMENT_BIT_MASK = simd_sort::get_alignment_bitmask<GATHER_SIZE>();
-    const auto num_items = sorted_elements.size();
-    const auto aligned_size = num_items & ALIGNMENT_BIT_MASK;
-    const auto remaining_size = num_items - aligned_size;
-
-    output_row_ids.resize(num_items);
-    if constexpr (!IS_LOSSLESS_COMPRESSION) {
-      output_values.resize(num_items);
+  void _materialize_values(const std::span<SimdElement> sorted_elements,
+                           MaterializedSegmentList<ColumnType>& materialized_segments,
+                           simd_sort::simd_vector<ColumnType>& output_values [[maybe_unused]]) {
+    if constexpr (IS_LOSSLESS_COMPRESSION) {
+      return;
     }
 
-    auto gather_indices = [&](const uint64_t* __restrict index_begin) {
-      auto indices = std::array<uint32_t, GATHER_SIZE>{};
+    const auto num_elements = sorted_elements.size();
+    output_values.resize(num_elements);
 
-#pragma clang loop vectorize(enable) interleave(enable) unroll(disable)
-      for (auto index = size_t{0}; index < GATHER_SIZE; ++index) {
-        indices[index] = ((index_begin[index]) << 32u) >> 32u;
-      }
-      return indices;
-    };
-
-    auto gather_row_ids = [&](const uint32_t* __restrict index_begin, const RowID* __restrict row_ids_data,
-                              RowID* __restrict row_ids_output) {
-      auto loaded_data = std::array<RowID, GATHER_SIZE>{};
-#pragma clang loop vectorize(enable) interleave(enable) unroll(disable)
-      for (auto index = size_t{0}; index < GATHER_SIZE; ++index) {
-        loaded_data[index] = row_ids_data[index_begin[index]];
-      }
-      __builtin_memcpy_inline(__builtin_assume_aligned(row_ids_output, BATCH_SIZE), loaded_data.data(), BATCH_SIZE);
-    };
-
-    // Gathers both RowIDs and values (only double and int64_t, strings are handled separately).
-    auto gather_row_ids_and_values = [&](const uint32_t* __restrict index_begin, const RowID* __restrict row_ids_data,
-                                         RowID* __restrict row_ids_output, const ColumnType* __restrict values,
-                                         const ColumnType* __restrict values_output) {
-      auto loaded_data = std::array<RowID, GATHER_SIZE>{};
-      auto loaded_values = std::array<ColumnType, GATHER_SIZE>{};
-
-#pragma clang loop vectorize(enable) interleave(enable) unroll(disable)
-      for (auto index = size_t{0}; index < GATHER_SIZE; ++index) {
-        const auto& rid = index_begin[index];
-        loaded_data[index] = row_ids_data[rid];
-        loaded_values[index] = values[rid];
-      }
-      __builtin_memcpy_inline(__builtin_assume_aligned(row_ids_output, BATCH_SIZE), loaded_data.data(), BATCH_SIZE);
-      __builtin_memcpy_inline(__builtin_assume_aligned(values_output, BATCH_SIZE), loaded_values.data(), BATCH_SIZE);
-    };
-
-    // Gather RowIDs and values in batches of size GATHER_SIZE.
-    // By applying auto vectorization vectorized gather instructions should be used.
-    for (auto index = size_t{0}; index < aligned_size; index += GATHER_SIZE) {
-      auto indices = std::move(gather_indices(reinterpret_cast<uint64_t*>(&sorted_elements[index])));
-      const auto offset = index;
-      if constexpr (IS_LOSSLESS_COMPRESSION) {  // ColumnType is float or int32_t.
-        gather_row_ids(indices.data(), row_ids.data(), output_row_ids.data() + offset);
-      } else if (!std::is_same_v<ColumnType, pmr_string> &&
-                 !std::is_same_v<ColumnType, int32_t>) {  // ColumnType is double or int64_t.
-        gather_row_ids_and_values(indices.data(), row_ids.data(), output_row_ids.data() + offset, values.data(),
-                                  output_values.data() + offset);
-      } else {  // ColumnType is pmr_string.
-        gather_row_ids(indices.data(), row_ids.data(), output_row_ids.data() + offset);
-        for (auto offset = size_t{0}; offset < GATHER_SIZE; ++offset) {
-          output_values[index + offset] = std::move(values[indices[offset]]);
-        }
-      }
-    }
-
-    // Gather remaining RowIDs and values.
-    if (remaining_size > 0) {
-      for (auto index = aligned_size; index < num_items; ++index) {
-        auto rid = sorted_elements[index].index;
-        output_row_ids[index] = row_ids[rid];
-
-        if constexpr (!IS_LOSSLESS_COMPRESSION) {
-          output_values[index] = std::move(values[rid]);
-        }
+    for (auto i = size_t{0}; i < num_elements; ++i) {
+      auto row_id = _unpack_row_id(sorted_elements[i].index);
+      if constexpr (!IS_LOSSLESS_COMPRESSION) {
+        output_values[i] = materialized_segments[row_id.chunk_id][row_id.chunk_offset].value;
       }
     }
   }
 
-  void _gather_row_ids_and_values_according_to_sorted_simd_data(
-      std::vector<SimdElementList>& sorted_elements_per_hash, std::vector<ColumnType>& values, RowIDPosList& row_ids,
-      std::vector<simd_sort::simd_vector<ColumnType>>& sorted_values,
-      std::vector<simd_sort::simd_vector<RowID>>& sorted_row_ids) {
-    auto jobs = std::vector<std::shared_ptr<AbstractTask>>{};
-
+  void _gather_values_according_to_sorted_simd_data(std::vector<SimdElementList>& sorted_elements_per_hash,
+                                                    MaterializedSegmentList<ColumnType>& materialized_segments,
+                                                    std::vector<simd_sort::simd_vector<ColumnType>>& sorted_values) {
     auto total_size = sorted_elements_per_hash.size();
     sorted_values.resize(total_size);
-    sorted_row_ids.resize(total_size);
+
+    if constexpr (IS_LOSSLESS_COMPRESSION) {
+      return;
+    }
+
+    auto jobs = std::vector<std::shared_ptr<AbstractTask>>{};
 
     for (auto cluster_index = size_t{0}; cluster_index < _cluster_count; ++cluster_index) {
       const auto element_count = sorted_elements_per_hash[cluster_index].size();
       if (element_count > JOB_SPAWN_THRESHOLD) {
         jobs.push_back(std::make_shared<JobTask>([&, this, cluster_index]() {
-          _materialized_row_ids_and_values(sorted_elements_per_hash[cluster_index], row_ids,
-                                           sorted_row_ids[cluster_index], values, sorted_values[cluster_index]);
+          _materialize_values(sorted_elements_per_hash[cluster_index], materialized_segments,
+                              sorted_values[cluster_index]);
         }));
       } else {
-        _materialized_row_ids_and_values(sorted_elements_per_hash[cluster_index], row_ids,
-                                         sorted_row_ids[cluster_index], values, sorted_values[cluster_index]);
+        _materialize_values(sorted_elements_per_hash[cluster_index], materialized_segments,
+                            sorted_values[cluster_index]);
       }
     }
 
@@ -931,8 +855,10 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
   std::shared_ptr<const Table> _on_execute() override {
     if constexpr (HYRISE_DEBUG) {
       std::cout << "Execute JoinSimdSortMerge: L2-Cache = " << L2_SIZE << '\n';
-      std::cout << "cpus: " << _num_cpus << ", cluster count: " << _cluster_count << '\n';
     }
+
+    Assert(_left_input_table->chunk_count() <= 65535, "Left chunk_count to big");
+    Assert(_right_input_table->chunk_count() <= 65535, "Right chunk_count to big");
 
     const auto include_null_left = (_mode == JoinMode::Left || _mode == JoinMode::FullOuter);
     const auto include_null_right = (_mode == JoinMode::Right || _mode == JoinMode::FullOuter);
@@ -952,12 +878,11 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
     const auto min_value = std::min(min_left, min_right);
     const auto max_value = std::max(max_left, max_right);
 
-    _transform_to_simd_format<ColumnType, LeftSideTransform>(materialized_segments_left, _materialized_values_left,
-                                                             _row_ids_left, _simd_elements_left, min_value, max_value);
+    _transform_to_simd_format<ColumnType, LeftSideTransform>(materialized_segments_left, _simd_elements_left, min_value,
+                                                             max_value);
 
-    _transform_to_simd_format<ColumnType, RightSideTransform>(materialized_segments_right, _materialized_values_right,
-                                                              _row_ids_right, _simd_elements_right, min_value,
-                                                              max_value);
+    _transform_to_simd_format<ColumnType, RightSideTransform>(materialized_segments_right, _simd_elements_right,
+                                                              min_value, max_value);
 
     _sorted_per_hash_left =
         std::move(_sort_relation<SortingType, LeftSidePartition, LeftSideSortBuckets>(_simd_elements_left));
@@ -967,12 +892,11 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
 
     auto timer = Timer{};
 
-    _gather_row_ids_and_values_according_to_sorted_simd_data(_sorted_per_hash_left, _materialized_values_left,
-                                                             _row_ids_left, _sorted_values_left, _sorted_row_ids_left);
+    _gather_values_according_to_sorted_simd_data(_sorted_per_hash_left, materialized_segments_left,
+                                                 _sorted_values_left);
 
-    _gather_row_ids_and_values_according_to_sorted_simd_data(_sorted_per_hash_right, _materialized_values_right,
-                                                             _row_ids_right, _sorted_values_right,
-                                                             _sorted_row_ids_right);
+    _gather_values_according_to_sorted_simd_data(_sorted_per_hash_right, materialized_segments_right,
+                                                 _sorted_values_right);
     _performance.set_step_runtime(GatherRowIds, timer.lap());
 
     _perform_join();
