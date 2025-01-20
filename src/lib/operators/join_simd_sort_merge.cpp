@@ -5,8 +5,8 @@
 #include <boost/unordered/unordered_flat_set.hpp>
 
 #include "operators/join_helper/join_output_writing.hpp"
-#include "operators/join_simd_sort_merge/smj_column_materializer.hpp"
 #include "operators/join_simd_sort_merge/k_way_merge.hpp"
+#include "operators/join_simd_sort_merge/smj_column_materializer.hpp"
 // #include "operators/join_sort_merge/column_materializer.hpp"
 #include "operators/join_simd_sort_merge/multiway_merging.hpp"
 #include "operators/join_simd_sort_merge/radix_partitioning.hpp"
@@ -636,10 +636,10 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
   template <typename SortingType, OperatorSteps partition_step, OperatorSteps sort_buckets_step>
   std::vector<SimdElementList> _sort_relation(SimdElementList& simd_elements) {
     auto timer = Timer{};
-    [[maybe_unused]] constexpr auto MIN_PARTITION_ELEMENTS = 1048576;
+    constexpr auto MIN_PARTITION_ELEMENTS = 1048576;
 
     // const auto chunk_count = std::max(size_t{1}, static_cast<size_t>(simd_elements.size() / MIN_PARTITION_ELEMENTS));
-    const auto chunk_count = 256;
+    const auto chunk_count = simd_elements.size() <= MIN_PARTITION_ELEMENTS ? 1 : _num_cpus;
     auto chunks = std::move(_split_vector_into_spans(simd_elements, chunk_count));
 
     auto partition_storage = std::vector<SimdElementList>(chunk_count);
@@ -768,8 +768,6 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
                                  T min_value, T max_value) {
     auto timer = Timer{};
 
-    simd_element_list.reserve(materialized_segments.size());
-
     auto total_size = std::accumulate(materialized_segments.begin(), materialized_segments.end(), size_t{0},
                                       [](size_t sum, auto& segment) {
                                         return std::move(sum) + segment.size();
@@ -780,10 +778,12 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
 
     auto transform_segment = [&](const size_t start_index, std::span<MaterializedValue<T>> segment) {
       auto index = start_index;
-      for (auto& materialized_value : segment) {
+      const auto segment_size = segment.size();
+      for (auto segment_index = size_t{0}; segment_index < segment_size; ++segment_index) {
+        auto& materialized_value = segment[segment_index];
+        auto& simd_element = simd_element_list[index + segment_index];
         const auto sorting_key = Data32BitCompression<T>::compress(materialized_value.value, min_value, max_value);
-        simd_element_list[index] = SimdElement{_pack_row_id(materialized_value.row_id), sorting_key};
-        ++index;
+        simd_element = SimdElement{_pack_row_id(materialized_value.row_id), sorting_key};
       }
     };
 
