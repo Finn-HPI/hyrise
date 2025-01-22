@@ -327,11 +327,10 @@ inline void __attribute__((always_inline)) sort_incomplete_chunk(DataChunk<T>& c
 
 template <std::size_t count_per_vector, typename T,
           ExecutionStrategy execution_strategy = ExecutionStrategy::SEQUENTIAL>
-std::pair<size_t, size_t> sort(T*& input_ptr, T*& output_ptr, std::size_t element_count) {
+void sort(T*& input_ptr, T*& output_ptr, std::size_t element_count) {
   if (element_count <= 0) [[unlikely]] {
-    return {};
+    return;
   }
-  auto sort_chunk_start = std::chrono::high_resolution_clock::now();
   constexpr auto BLOCK_SIZE = block_size<T>();
   auto* input = input_ptr;
   auto* output = output_ptr;
@@ -387,9 +386,6 @@ std::pair<size_t, size_t> sort(T*& input_ptr, T*& output_ptr, std::size_t elemen
     }
   }
 
-  auto sort_chunk_end = std::chrono::high_resolution_clock::now();
-  auto merge_start = std::chrono::high_resolution_clock::now();
-
   // Next we merge all these chunks to achieve a global sorting.
   if constexpr (execution_strategy == ExecutionStrategy::PARALLEL) {
     merge_recursive<count_per_vector, T>(chunk_list);
@@ -402,12 +398,8 @@ std::pair<size_t, size_t> sort(T*& input_ptr, T*& output_ptr, std::size_t elemen
     }
   }
 
-  auto merge_end = std::chrono::high_resolution_clock::now();
-
   auto& merged_chunk = chunk_list.front();
   output_ptr = merged_chunk.input;
   input_ptr = merged_chunk.output;
-  return {std::chrono::duration_cast<std::chrono::milliseconds>(sort_chunk_end - sort_chunk_start).count(),
-          std::chrono::duration_cast<std::chrono::milliseconds>(merge_end - merge_start).count()};
 }
 }  // namespace hyrise::simd_sort

@@ -28,11 +28,11 @@ class CircularBuffer {
   template <typename T>
   inline bool debug_is_sorted(const size_t buffer_size);
 
-  inline size_t fill_count() const {
+  size_t fill_count() const {
     return _fill_count;
   }
 
-  inline bool empty() const {
+  bool empty() const {
     return _fill_count == 0;
   }
 
@@ -216,8 +216,8 @@ inline bool CircularBuffer::debug_is_sorted(const size_t buffer_size) {
   if (empty()) {
     return true;
   }
-  auto first_chunk = BufferChunk{_tail, (_tail < _head) ? _head : buffer_size};
-  auto second_chunk = BufferChunk{0, (_tail < _head) ? 0 : _head};
+  auto first_chunk = BufferChunk{.start = _tail, .end = (_tail < _head) ? _head : buffer_size};
+  auto second_chunk = BufferChunk{.start = 0, .end = (_tail < _head) ? 0 : _head};
 
   auto last_element = std::numeric_limits<T>::lowest();
 

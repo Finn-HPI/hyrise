@@ -20,6 +20,7 @@
 #endif
 
 #include <algorithm>
+#include <fstream>
 #include <iterator>
 #include <limits>
 #include <optional>
@@ -633,13 +634,33 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
     return chunks;
   }
 
+  std::string _generate_unique_file_name() {
+    // Get the current time point
+    auto now = std::chrono::system_clock::now();
+    auto now_ns = std::chrono::time_point_cast<std::chrono::nanoseconds>(now);
+    auto epoch = now_ns.time_since_epoch();
+    auto nanoseconds = std::chrono::duration_cast<std::chrono::nanoseconds>(epoch).count();
+
+    // Convert to time_t to extract calendar time
+    std::time_t now_time_t = std::chrono::system_clock::to_time_t(now);
+    std::tm now_tm{};
+
+    localtime_r(&now_time_t, &now_tm);
+
+    // Format the time into a string
+    std::ostringstream oss;
+    oss << std::put_time(&now_tm, "%Y%m%d_%H%M%S") << "_" << nanoseconds;
+
+    return oss.str();
+  }
+
   template <typename SortingType, OperatorSteps partition_step, OperatorSteps sort_buckets_step>
   std::vector<SimdElementList> _sort_relation(SimdElementList& simd_elements) {
     auto timer = Timer{};
-    constexpr auto MIN_PARTITION_ELEMENTS = 1048576;
+    [[maybe_unused]] constexpr auto MIN_PARTITION_ELEMENTS = 1048576;
 
     // const auto chunk_count = std::max(size_t{1}, static_cast<size_t>(simd_elements.size() / MIN_PARTITION_ELEMENTS));
-    const auto chunk_count = simd_elements.size() <= MIN_PARTITION_ELEMENTS ? 1 : _num_cpus;
+    const auto chunk_count = 64;
     auto chunks = std::move(_split_vector_into_spans(simd_elements, chunk_count));
 
     auto partition_storage = std::vector<SimdElementList>(chunk_count);
@@ -648,7 +669,7 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
     auto sort_bucket = [](size_t bucket_index, RadixPartition<ColumnType>& radix_partition,
                           SimdElementList& chunk_working_memory) {
       auto& bucket = radix_partition.bucket(bucket_index);
-      if (!bucket.size) {
+      if (bucket.empty()) {
         return;
       }
       const auto count_per_vector = choose_count_per_vector();
@@ -672,25 +693,9 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
       auto& radix_partition = chunk_partitions[chunk_index];
       radix_partition.execute(partition_storage[chunk_index], chunk_working_memory);
 
-      // After partitioning, we sort each bucket using SIMD sort.
-      // if (chunk_count < _num_cpus / 2) {
-      //   auto jobs = std::vector<std::shared_ptr<AbstractTask>>{};
-      //   for (auto bucket_index = size_t{0}; bucket_index < _cluster_count; ++bucket_index) {
-      //     if (radix_partition.bucket(bucket_index).size <= JOB_SPAWN_THRESHOLD) {
-      //       sort_bucket(bucket_index, radix_partition, chunk_working_memory);
-      //     } else {
-      //       jobs.push_back(
-      //           std::make_shared<JobTask>([&sort_bucket, bucket_index, &radix_partition, &chunk_working_memory] {
-      //             sort_bucket(bucket_index, radix_partition, chunk_working_memory);
-      //           }));
-      //     }
-      //   }
-      //   Hyrise::get().scheduler()->schedule_and_wait_for_tasks(jobs);
-      // } else {
       for (auto bucket_index = size_t{0}; bucket_index < _cluster_count; ++bucket_index) {
         sort_bucket(bucket_index, radix_partition, chunk_working_memory);
       }
-      // }
     };
 
     auto jobs = std::vector<std::shared_ptr<AbstractTask>>{};
@@ -714,6 +719,9 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
       auto sorted_buckets = std::vector<Bucket*>{};
       sorted_buckets.reserve(chunk_count);
       for (auto& partition : chunk_partitions) {
+        if (partition.bucket(bucket_index).empty()) {
+          continue;
+        }
         sorted_buckets.push_back(&partition.bucket(bucket_index));
       }
       auto multiway_merger = multiway_merging::MultiwayMerger<choose_count_per_vector(), SortingType>(sorted_buckets);
@@ -817,9 +825,7 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
 
     for (auto i = size_t{0}; i < num_elements; ++i) {
       auto row_id = _unpack_row_id(sorted_elements[i].index);
-      if constexpr (!IS_LOSSLESS_COMPRESSION) {
-        output_values[i] = materialized_segments[row_id.chunk_id][row_id.chunk_offset].value;
-      }
+      output_values[i] = materialized_segments[row_id.chunk_id][row_id.chunk_offset].value;
     }
   }
 
@@ -851,10 +857,10 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
     Hyrise::get().scheduler()->schedule_and_wait_for_tasks(jobs);
   }
 
- public:
   std::shared_ptr<const Table> _on_execute() override {
     if constexpr (HYRISE_DEBUG) {
       std::cout << "Execute JoinSimdSortMerge: L2-Cache = " << L2_SIZE << '\n';
+      std::cout << "type size: " << sizeof(ColumnType) << std::endl;
     }
 
     Assert(_left_input_table->chunk_count() <= 65535, "Left chunk_count to big");
@@ -884,6 +890,9 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
     _transform_to_simd_format<ColumnType, RightSideTransform>(materialized_segments_right, _simd_elements_right,
                                                               min_value, max_value);
 
+    std::string log_path = "radix_results/" + _generate_unique_file_name();
+    std::filesystem::create_directory(log_path);
+
     _sorted_per_hash_left =
         std::move(_sort_relation<SortingType, LeftSidePartition, LeftSideSortBuckets>(_simd_elements_left));
 
@@ -894,7 +903,6 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
 
     _gather_values_according_to_sorted_simd_data(_sorted_per_hash_left, materialized_segments_left,
                                                  _sorted_values_left);
-
     _gather_values_according_to_sorted_simd_data(_sorted_per_hash_right, materialized_segments_right,
                                                  _sorted_values_right);
     _performance.set_step_runtime(GatherRowIds, timer.lap());
