@@ -46,19 +46,22 @@ class SMJColumnMaterializer {
 
   // For sufficiently large chunks (number of rows > JOB_SPAWN_THRESHOLD), the materialization is parallelized. Returns
   // the materialized segments and a list of null row ids if _materialize_null is true.
-  std::tuple<MaterializedSegmentList<T>, RowIDPosList, T, T> materialize(const std::shared_ptr<const Table>& input,
-                                                                         const ColumnID column_id) {
+  std::tuple<MaterializedSegmentList<T>, RowIDPosList, ChunkID, ChunkOffset, T, T> materialize(
+      const std::shared_ptr<const Table>& input, const ColumnID column_id) {
     const auto chunk_count = input->chunk_count();
 
     auto output = MaterializedSegmentList<T>(chunk_count);
 
     auto null_rows_per_chunk = std::vector<RowIDPosList>(chunk_count);
 
+    auto max_chunk_size = ChunkOffset{0};
+
     auto jobs = std::vector<std::shared_ptr<AbstractTask>>{};
     for (auto chunk_id = ChunkID{0}; chunk_id < chunk_count; ++chunk_id) {
       const auto& chunk = input->get_chunk(chunk_id);
       Assert(chunk, "Physically deleted chunk should not reach this point, see get_chunk / #1686.");
       const auto chunk_size = chunk->size();
+      max_chunk_size = std::max(chunk_size, max_chunk_size);
 
       auto materialize_job = [&, chunk_id] {
         const auto& segment = input->get_chunk(chunk_id)->get_segment(column_id);
@@ -86,7 +89,7 @@ class SMJColumnMaterializer {
       null_rows.insert(null_rows.end(), chunk_null_rows.begin(), chunk_null_rows.end());
     }
 
-    return {std::move(output), std::move(null_rows), T{}, T{}};
+    return {std::move(output), std::move(null_rows), chunk_count, max_chunk_size, T{}, T{}};
   }
 
  private:
@@ -120,7 +123,7 @@ class SMJColumnMaterializer<int64_t> {
 
   // For sufficiently large chunks (number of rows > JOB_SPAWN_THRESHOLD), the materialization is parallelized. Returns
   // the materialized segments and a list of null row ids if _materialize_null is true.
-  std::tuple<MaterializedSegmentList<int64_t>, RowIDPosList, int64_t, int64_t> materialize(
+  std::tuple<MaterializedSegmentList<int64_t>, RowIDPosList, ChunkID, ChunkOffset, int64_t, int64_t> materialize(
       const std::shared_ptr<const Table>& input, const ColumnID column_id) {
     const auto chunk_count = input->chunk_count();
 
@@ -129,11 +132,14 @@ class SMJColumnMaterializer<int64_t> {
 
     auto null_rows_per_chunk = std::vector<RowIDPosList>(chunk_count);
 
+    auto max_chunk_size = ChunkOffset{0};
+
     auto jobs = std::vector<std::shared_ptr<AbstractTask>>{};
     for (auto chunk_id = ChunkID{0}; chunk_id < chunk_count; ++chunk_id) {
       const auto& chunk = input->get_chunk(chunk_id);
       Assert(chunk, "Physically deleted chunk should not reach this point, see get_chunk / #1686.");
       const auto chunk_size = chunk->size();
+      max_chunk_size = std::max(chunk_size, max_chunk_size);
 
       auto materialize_job = [&, chunk_id] {
         const auto& segment = input->get_chunk(chunk_id)->get_segment(column_id);
@@ -170,7 +176,7 @@ class SMJColumnMaterializer<int64_t> {
       null_rows.insert(null_rows.end(), chunk_null_rows.begin(), chunk_null_rows.end());
     }
 
-    return {std::move(output), std::move(null_rows), min, max};
+    return {std::move(output), std::move(null_rows), chunk_count, max_chunk_size, min, max};
   }
 
  private:
