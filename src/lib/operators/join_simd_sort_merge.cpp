@@ -713,8 +713,8 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
     auto partition_storage = std::vector<SimdElementList>(chunk_count);
     auto working_memory = std::vector<SimdElementList>(chunk_count);
 
-    auto sort_bucket = [](size_t bucket_index, RadixPartition<ColumnType>& radix_partition,
-                          SimdElementList& chunk_working_memory) {
+    auto sort_bucket = [chunk_count](size_t bucket_index, RadixPartition<ColumnType>& radix_partition,
+                                     SimdElementList& chunk_working_memory) {
       auto& bucket = radix_partition.bucket(bucket_index);
       if (bucket.empty()) {
         return;
