@@ -99,37 +99,17 @@ inline void __attribute__((always_inline)) sort_chunk(DataChunk<T>& block) {
 
 template <std::size_t count_per_vector, typename T>
 inline std::size_t __attribute__((always_inline)) merge_chunk_list(std::vector<DataChunk<T>>& chunk_list,
-                                                                   std::size_t chunk_count, bool reverse = false) {
+                                                                   std::size_t chunk_count) {
   using TwoWayMerge = TwoWayMerge<count_per_vector, T>;
   auto updated_chunk_count = std::size_t{0};
   const auto last_chunk_index = chunk_count - 1;
-  if (!reverse) {
-    for (auto chunk_index = std::size_t{0}; chunk_index < last_chunk_index; chunk_index += 2) {
-      const auto& chunk_info_a = chunk_list[chunk_index];
-      const auto& chunk_info_b = chunk_list[chunk_index + 1];
-      TwoWayMerge::template merge_variable_length<count_per_vector * LEVEL4_MERGE_KERNEL_SCALE>(
-          chunk_info_a.input, chunk_info_b.input, chunk_info_a.output, chunk_info_a.size, chunk_info_b.size);
-      chunk_list[updated_chunk_count] = {chunk_info_a.output, chunk_info_a.input,
-                                         chunk_info_a.size + chunk_info_b.size};
-      ++updated_chunk_count;
-    }
-  } else {
-    auto old_chunk_list = std::vector<DataChunk<T>>(chunk_count);
-    std::ranges::copy(std::span(chunk_list.begin(), chunk_count), old_chunk_list.begin());
-
-    auto rounded_chunk_size = chunk_count & ~1u;
-    auto chunk_index = rounded_chunk_size - 1;
-    updated_chunk_count = rounded_chunk_size / 2;
-
-    for (auto old_chunk_index = static_cast<int64_t>(chunk_index), index = int64_t{0}; old_chunk_index > 0;
-         old_chunk_index -= 2, ++index) {
-      const auto& chunk_info_a = old_chunk_list[old_chunk_index - 1];
-      const auto& chunk_info_b = old_chunk_list[old_chunk_index];
-      TwoWayMerge::template merge_variable_length<count_per_vector * LEVEL4_MERGE_KERNEL_SCALE>(
-          chunk_info_a.input, chunk_info_b.input, chunk_info_a.output, chunk_info_a.size, chunk_info_b.size);
-      chunk_list[(updated_chunk_count - 1) - index] = {chunk_info_a.output, chunk_info_a.input,
-                                                       chunk_info_a.size + chunk_info_b.size};
-    }
+  for (auto chunk_index = std::size_t{0}; chunk_index < last_chunk_index; chunk_index += 2) {
+    const auto& chunk_info_a = chunk_list[chunk_index];
+    const auto& chunk_info_b = chunk_list[chunk_index + 1];
+    TwoWayMerge::template merge_variable_length<count_per_vector * LEVEL4_MERGE_KERNEL_SCALE>(
+        chunk_info_a.input, chunk_info_b.input, chunk_info_a.output, chunk_info_a.size, chunk_info_b.size);
+    chunk_list[updated_chunk_count] = {chunk_info_a.output, chunk_info_a.input, chunk_info_a.size + chunk_info_b.size};
+    ++updated_chunk_count;
   }
   // If we had odd many blocks, we have one additional unmerged block for the next iteration.
   if (chunk_count % 2) {
@@ -388,18 +368,20 @@ void sort(T*& input_ptr, T*& output_ptr, std::size_t element_count) {
 
   // Next we merge all these chunks to achieve a global sorting.
   if constexpr (execution_strategy == ExecutionStrategy::PARALLEL) {
-    merge_recursive<count_per_vector, T>(chunk_list);
+    chunk_list[0] = merge_recursive<count_per_vector, T>(chunk_list);
   } else {
     const auto log_n = static_cast<std::size_t>(std::ceil(std::log2(element_count)));
     const auto log_block_size = log2_builtin(BLOCK_SIZE);
-    bool reverse = true;
-    for (auto level_index = log_block_size; level_index < log_n; ++level_index, reverse = !reverse) {
-      chunk_count = merge_chunk_list<count_per_vector>(chunk_list, chunk_count, reverse);
+    for (auto level_index = log_block_size; level_index < log_n; ++level_index) {
+      chunk_count = merge_chunk_list<count_per_vector>(chunk_list, chunk_count);
     }
   }
 
   auto& merged_chunk = chunk_list.front();
   output_ptr = merged_chunk.input;
   input_ptr = merged_chunk.output;
+
+  auto sorted_data = std::span(output_ptr, element_count);
+  Assert(std::ranges::is_sorted(sorted_data), "Output data was not sorted");
 }
 }  // namespace hyrise::simd_sort
