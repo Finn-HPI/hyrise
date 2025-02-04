@@ -101,6 +101,14 @@ struct Data32BitCompression<hyrise::pmr_string> {
   }
 };
 
+constexpr std::size_t choose_count_per_vector() {
+#if defined(__AVX512F__)
+  return 8;
+#else
+  return 4;
+#endif
+}
+
 }  // namespace
 
 namespace hyrise {
@@ -167,14 +175,6 @@ const std::string& JoinSimdSortMerge::name() const {
   return name;
 }
 
-constexpr std::size_t choose_count_per_vector() {
-#if defined(__AVX512F__)
-  return 8;
-#else
-  return 4;
-#endif
-}
-
 template <typename ColumnType>
 class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperatorImpl {
  public:
@@ -212,7 +212,7 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
   const JoinMode _mode;
 
   size_t _num_cpus;
-  size_t _cluster_count{1};
+  size_t _cluster_count{256};
 
   std::vector<simd_sort::simd_vector<ColumnType>> _sorted_values_left;
   std::vector<simd_sort::simd_vector<ColumnType>> _sorted_values_right;
@@ -314,16 +314,16 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
     void find_matches_with_range(const PotentialMatchRange& other_range, auto&& action) const {
       // Handle float and int32_t values.
       if constexpr (IS_LOSSLESS_COMPRESSION) {
-        this->for_every_row_id([&](const RowID left_row_id) {
-          other_range.for_every_row_id([&](const RowID right_row_id) {
+        this->for_every_row_id([&](const RowID& left_row_id) {
+          other_range.for_every_row_id([&](const RowID& right_row_id) {
             action(left_row_id, right_row_id);
           });
         });
         return;
       }
       // Handle pmr_string values.
-      this->for_every_row_id([&](const RowID left_row_id, const ColumnType& value_left) {
-        other_range.for_every_row_id([&](const RowID right_row_id, const ColumnType& value_right) {
+      this->for_every_row_id([&](const RowID& left_row_id, const ColumnType& value_left) {
+        other_range.for_every_row_id([&](const RowID& right_row_id, const ColumnType& value_right) {
           if (value_left != value_right) {
             return;
           }
@@ -333,13 +333,17 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
     }
   };
 
+  static SortingType _compare_value(uint32_t key) {
+    return std::bit_cast<SortingType>(static_cast<uint64_t>(key) << 32u);
+  }
+
   std::size_t _equal_value_range_size(std::size_t start_index, std::span<SimdElement>& elements) {
     if (start_index >= elements.size()) {
       return 0;
     }
     auto begin = elements.begin();
     std::advance(begin, start_index);
-    const auto run_value = begin->key;
+    const auto run_value = _compare_value(begin->key);
 
     constexpr auto LINEAR_SEARCH_ITEMS = std::size_t{128};
     auto end = begin + LINEAR_SEARCH_ITEMS;
@@ -349,7 +353,7 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
     }
 
     const auto linear_search_result = std::find_if(begin, end, [&](const auto& simd_element) {
-      return simd_element.key > run_value;
+      return _compare_value(simd_element.key) > run_value;
     });
 
     if (linear_search_result != end) {
@@ -357,7 +361,7 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
       return std::distance(begin, linear_search_result);
     }
 
-    if (linear_search_result == elements.end()) {
+    if (linear_search_result == elements.end() || _compare_value(end->key) > run_value) {
       // We did not find a larger value in the linearly scanned part and it spanned until the end of the input vector.
       // That means all values up to the end are part of the run.
       return std::distance(begin, end);
@@ -365,7 +369,7 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
 
     // Binary search in case the run did not end within the linearly scanned part.
     const auto binary_search_result = std::upper_bound(end, elements.end(), *end, [](const auto& lhs, const auto& rhs) {
-      return lhs.key < rhs.key;
+      return _compare_value(lhs.key) < _compare_value(rhs.key);
     });
     return std::distance(begin, binary_search_result);
   }
@@ -381,7 +385,7 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
   void _emit_combinations_multi_predicated_inner(const std::size_t bucket_index, const PotentialMatchRange left_range,
                                                  const PotentialMatchRange right_range,
                                                  MultiPredicateJoinEvaluator& multi_predicate_join_evaluator) {
-    left_range.find_matches_with_range(right_range, [&](const RowID left_row_id, const RowID right_row_id) {
+    left_range.find_matches_with_range(right_range, [&](const RowID& left_row_id, const RowID& right_row_id) {
       if (multi_predicate_join_evaluator.satisfies_all_predicates(left_row_id, right_row_id)) {
         _emit_combination(bucket_index, left_row_id, right_row_id);
       }
@@ -495,7 +499,7 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
       }
     } else {
       // no secondary join predicates
-      left_range.find_matches_with_range(right_range, [&](const RowID left_row_id, const RowID right_row_id) {
+      left_range.find_matches_with_range(right_range, [&](const RowID& left_row_id, const RowID& right_row_id) {
         _emit_combination(bucket_index, left_row_id, right_row_id);
       });
     }
@@ -552,8 +556,8 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
 
   // Currently we only support Inner, Equi-Joins.
   void _join_per_hash(std::size_t bucket_index, std::span<SimdElement> left_elements,
-                      std::span<SimdElement> right_elements, std::span<ColumnType> left_values [[maybe_unused]],
-                      std::span<ColumnType> right_values [[maybe_unused]]) {
+                      std::span<SimdElement> right_elements, std::span<ColumnType> left_values,
+                      std::span<ColumnType> right_values) {
     auto multi_predicate_join_evaluator = std::optional<MultiPredicateJoinEvaluator>{};
     if (!_secondary_join_predicates.empty()) {
       multi_predicate_join_evaluator.emplace(*_sort_merge_join._left_input->get_output(),
@@ -571,14 +575,14 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
     const auto right_size = right_elements.size();
 
     while (left_run_start < left_size && right_run_start < right_size) {
-      const auto& left_value = left_elements[left_run_start].key;
-      const auto& right_value = right_elements[right_run_start].key;
+      const auto left_value = _compare_value(left_elements[left_run_start].key);
+      const auto right_value = _compare_value(right_elements[right_run_start].key);
 
       const auto compare_result = _compare(left_value, right_value);
 
-      const auto left_range =
+      [[maybe_unused]] const auto left_range =
           PotentialMatchRange(left_run_start, left_run_end, left_elements, left_values, _chunk_offset_bits_left);
-      const auto right_range =
+      [[maybe_unused]] const auto right_range =
           PotentialMatchRange(right_run_start, right_run_end, right_elements, right_values, _chunk_offset_bits_right);
 
       _find_matches_in_ranges(left_range, right_range, compare_result, multi_predicate_join_evaluator, bucket_index);
@@ -620,52 +624,52 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
     }
   }
 
-  // void _join(std::vector<MaterializedValue<ColumnType>>& left, std::vector<MaterializedValue<ColumnType>>& right) {
-  //   // NOLINTBEGIN
-  //   size_t i = 0;
-  //   size_t j = 0;
-  //
-  //   while (i < left.size() && j < right.size()) {
-  //     if (left[i].value == right[j].value) {
-  //       size_t start_j = j;
-  //       while (start_j < right.size() && right[start_j].value == left[i].value) {
-  //         _emit_combination2(0, left[i].row_id, right[start_j].row_id);
-  //         start_j++;
-  //       }
-  //       i++;  // Move to the next element in Column1
-  //     } else if (left[i].value < right[j].value) {
-  //       i++;  // Move the pointer in column1
-  //     } else {
-  //       j++;  // Move the pointer in column2
-  //     }
-  //   }
-  //   // NOLINTEND
-  // }
-  //
-  // void _join2(SimdElementList& left, SimdElementList& right) {
-  //   // NOLINTBEGIN
-  //   size_t i = 0;
-  //   size_t j = 0;
-  //
-  //   while (i < left.size() && j < right.size()) {
-  //     if (left[i].key == right[j].key) {
-  //       // Match found, iterate through duplicates in Column2
-  //       size_t start_j = j;
-  //       while (start_j < right.size() && right[start_j].key == left[i].key) {
-  //         auto row_id_left = _unpack_row_id(left[i].index, _chunk_offset_bits_left);
-  //         auto row_id_right = _unpack_row_id(right[start_j].index, _chunk_offset_bits_right);
-  //         _emit_combination(0, row_id_left, row_id_right);
-  //         start_j++;
-  //       }
-  //       i++;  // Move to the next element in Column1
-  //     } else if (left[i].key < right[j].key) {
-  //       i++;  // Move the pointer in column1
-  //     } else {
-  //       j++;  // Move the pointer in column2
-  //     }
-  //   }
-  //   // NOLINTEND
-  // }
+  void _join(std::vector<MaterializedValue<ColumnType>>& left, std::vector<MaterializedValue<ColumnType>>& right) {
+    // NOLINTBEGIN
+    size_t i = 0;
+    size_t j = 0;
+
+    while (i < left.size() && j < right.size()) {
+      if (left[i].value == right[j].value) {
+        size_t start_j = j;
+        while (start_j < right.size() && right[start_j].value == left[i].value) {
+          _emit_combination(0, left[i].row_id, right[start_j].row_id);
+          start_j++;
+        }
+        i++;  // Move to the next element in Column1
+      } else if (left[i].value < right[j].value) {
+        i++;  // Move the pointer in column1
+      } else {
+        j++;  // Move the pointer in column2
+      }
+    }
+    // NOLINTEND
+  }
+
+  void _join2(SimdElementList& left, SimdElementList& right) {
+    // NOLINTBEGIN
+    size_t i = 0;
+    size_t j = 0;
+
+    while (i < left.size() && j < right.size()) {
+      if (left[i].key == right[j].key) {
+        // Match found, iterate through duplicates in Column2
+        size_t start_j = j;
+        while (start_j < right.size() && right[start_j].key == left[i].key) {
+          auto row_id_left = _unpack_row_id(left[i].index, _chunk_offset_bits_left);
+          auto row_id_right = _unpack_row_id(right[start_j].index, _chunk_offset_bits_right);
+          _emit_combination(0, row_id_left, row_id_right);
+          start_j++;
+        }
+        i++;  // Move to the next element in Column1
+      } else if (left[i].key < right[j].key) {
+        i++;  // Move the pointer in column1
+      } else {
+        j++;  // Move the pointer in column2
+      }
+    }
+    // NOLINTEND
+  }
 
   void _perform_join() {
     auto jobs = std::vector<std::shared_ptr<AbstractTask>>{};
@@ -704,10 +708,10 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
   template <typename SortingType, OperatorSteps partition_step, OperatorSteps sort_buckets_step>
   std::vector<SimdElementList> _sort_relation(SimdElementList& simd_elements) {
     auto timer = Timer{};
-    [[maybe_unused]] constexpr auto MIN_PARTITION_ELEMENTS = 1048576;
+    constexpr auto MIN_PARTITION_ELEMENTS = 1048576;
 
     // const auto chunk_count = std::max(size_t{1}, static_cast<size_t>(simd_elements.size() / MIN_PARTITION_ELEMENTS));
-    const auto chunk_count = (simd_elements.size() < MIN_PARTITION_ELEMENTS) ? 1 : _num_cpus;
+    const auto chunk_count = (simd_elements.size() <= MIN_PARTITION_ELEMENTS) ? 1 : _num_cpus;
     auto chunks = std::move(_split_vector_into_spans(simd_elements, chunk_count));
 
     auto partition_storage = std::vector<SimdElementList>(chunk_count);
@@ -731,8 +735,10 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
         simd_sort::sort<count_per_vector, SortingType, ExecutionStrategy::PARALLEL>(input_pointer, output_pointer,
                                                                                     bucket.size);
       } else {
-        simd_sort::sort<count_per_vector, SortingType>(input_pointer, output_pointer, bucket.size);
+        simd_sort::sort<count_per_vector, SortingType, ExecutionStrategy::SEQUENTIAL>(input_pointer, output_pointer,
+                                                                                      bucket.size);
       }
+
       bucket.data = reinterpret_cast<SimdElement*>(output_pointer);
     };
 
@@ -788,6 +794,7 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
     }
     Hyrise::get().scheduler()->schedule_and_wait_for_tasks(jobs);
 
+    _performance.set_step_runtime(sort_buckets_step, timer.lap());
     return sorted_clusters;
   }
 
@@ -803,8 +810,8 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
     auto chunk_id_bits = static_cast<uint32_t>(std::ceil(std::log2(static_cast<double>(chunk_count))));
     chunk_offset_bits = static_cast<uint32_t>(std::ceil(std::log2(static_cast<double>(max_chunk_size))));
 
-    //std::cout << chunk_count << ": " << chunk_id_bits << ", " << max_chunk_size << ": " << chunk_offset_bits
-    //          << std::endl;
+    // std::cout << chunk_count << ": " << chunk_id_bits << ", " << max_chunk_size << ": " << chunk_offset_bits
+    //           << std::endl;
 
     Assert(chunk_id_bits + chunk_offset_bits <= 32, "RowIDs can't be compressed to 32-bits.");
 
@@ -825,8 +832,6 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
                                         return std::move(sum) + segment.size();
                                       });
 
-    // std::cout << "total_size: " << total_size << std::endl;
-
     DebugAssert(total_size <= std::numeric_limits<uint32_t>::max(), "Index has to fit into 32 bits. ");
     simd_element_list.resize(total_size);
 
@@ -835,8 +840,9 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
       const auto segment_size = segment.size();
       for (auto segment_index = size_t{0}; segment_index < segment_size; ++segment_index) {
         auto& materialized_value = segment[segment_index];
+        auto& simd_element = simd_element_list[index + segment_index];
         const auto sorting_key = Data32BitCompression<T>::compress(materialized_value.value, min_value, max_value);
-        simd_element_list[index + segment_index] = SimdElement{pack_row_id(materialized_value.row_id), sorting_key};
+        simd_element = SimdElement{pack_row_id(materialized_value.row_id), sorting_key};
       }
     };
 
@@ -856,6 +862,22 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
     Hyrise::get().scheduler()->schedule_and_wait_for_tasks(jobs);
 
     _performance.set_step_runtime(transform_step, timer.lap());
+  }
+
+  MaterializedSegment<ColumnType> _flatten(MaterializedSegmentList<ColumnType>& materialized_segments) {
+    auto total_size = std::accumulate(materialized_segments.begin(), materialized_segments.end(), size_t{0},
+                                      [](size_t sum, auto& segment) {
+                                        return std::move(sum) + segment.size();
+                                      });
+
+    auto elements = MaterializedSegment<ColumnType>{};
+    elements.reserve(total_size);
+    for (auto& segment : materialized_segments) {
+      for (auto& value : segment) {
+        elements.emplace_back(value);
+      }
+    }
+    return elements;
   }
 
   void _materialize_values(const std::span<SimdElement> sorted_elements,
@@ -906,15 +928,12 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
   std::shared_ptr<const Table> _on_execute() override {
     if constexpr (HYRISE_DEBUG) {
       std::cout << "Execute JoinSimdSortMerge: L2-Cache = " << L2_SIZE << '\n';
-      std::cout << "float: " << std::is_same_v<ColumnType, float> << " int32: "
-                << std::is_same_v<ColumnType, int32_t> << '\n';
-      std::cout << "type size: " << sizeof(ColumnType) << "mode: " << _mode << std::endl;
-      std::cout << "secondary_join_predicates: " << _secondary_join_predicates.size() << std::endl;
-      std::cout << _left_input_table->row_count() << " " << _right_input_table->row_count() << std::endl;
+      // std::cout << "float: " << std::is_same_v<ColumnType, float> << " int32: "
+      //           << std::is_same_v<ColumnType, int32_t> << '\n';
+      // std::cout << "type size: " << sizeof(ColumnType) << "mode: " << _mode << std::endl;
+      // std::cout << "secondary_join_predicates: " << _secondary_join_predicates.size() << std::endl;
+      // std::cout << _left_input_table->row_count() << " " << _right_input_table->row_count() << std::endl;
     }
-
-    Assert(_left_input_table->chunk_count() <= 65535, "Left chunk_count to big");
-    Assert(_right_input_table->chunk_count() <= 65535, "Right chunk_count to big");
 
     const auto include_null_left = (_mode == JoinMode::Left || _mode == JoinMode::FullOuter);
     const auto include_null_right = (_mode == JoinMode::Right || _mode == JoinMode::FullOuter);
@@ -969,8 +988,6 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
     _performance.set_step_runtime(GatherRowIds, timer.lap());
 
     _perform_join();
-    //_join2(_sorted_per_hash_left[0], _sorted_per_hash_right[0]);
-    //_join(left_values, right_values);
 
     if (include_null_left || include_null_right) {
       auto null_output_left = RowIDPosList();
@@ -1008,9 +1025,9 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
                             create_left_side_pos_lists_by_segment, create_right_side_pos_lists_by_segment,
                             OutputColumnOrder::LeftFirstRightSecond, ALLOW_PARTITION_MERGE);
 
-    const ColumnID left_join_column = _sort_merge_join._primary_predicate.column_ids.first;
-    const ColumnID right_join_column = static_cast<ColumnID>(_sort_merge_join.left_input_table()->column_count() +
-                                                             _sort_merge_join._primary_predicate.column_ids.second);
+    // const ColumnID left_join_column = _sort_merge_join._primary_predicate.column_ids.first;
+    // const ColumnID right_join_column = static_cast<ColumnID>(_sort_merge_join.left_input_table()->column_count() +
+    //                                                          _sort_merge_join._primary_predicate.column_ids.second);
 
     for (auto& chunk : output_chunks) {
       if (_sort_merge_join._primary_predicate.predicate_condition == PredicateCondition::Equals &&
@@ -1022,14 +1039,13 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
     _performance.set_step_runtime(OperatorSteps::OutputWriting, timer.lap());
 
     auto result_table = _sort_merge_join._build_output_table(std::move(output_chunks));
-    if (IS_LOSSLESS_COMPRESSION && _mode != JoinMode::Left && _mode != JoinMode::Right &&
-        _mode != JoinMode::FullOuter &&
-        _sort_merge_join._primary_predicate.predicate_condition == PredicateCondition::Equals) {
-      // Table clustering is not defined for columns storing NULL values. Additionally, clustering is not given for
-      // non-equal predicates.
-      result_table->set_value_clustered_by({left_join_column, right_join_column});
-    }
 
+    // if (_mode != JoinMode::Left && _mode != JoinMode::Right && _mode != JoinMode::FullOuter &&
+    //     _sort_merge_join._primary_predicate.predicate_condition == PredicateCondition::Equals) {
+    //   // Table clustering is not defined for columns storing NULL values. Additionally, clustering is not given for
+    //   // non-equal predicates.
+    //   result_table->set_value_clustered_by({left_join_column, right_join_column});
+    // }
     return result_table;
   }
 };
