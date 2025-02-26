@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "operators/join_simd_sort_merge/simd_utils.hpp"
+#include "operators/join_simd_sort_merge/smj_column_materializer.hpp"
 #include "util.hpp"
 
 namespace hyrise::radix_partition {
@@ -45,12 +46,13 @@ using cache_aligned_vector = simd_sort::simd_vector<T>;
 template <typename ColumnType>
 struct RadixPartition {
  public:
-  explicit RadixPartition(const std::span<SimdElement> elements, size_t cluster_count)
+  explicit RadixPartition(const std::vector<std::span<MaterializedValue<ColumnType>>> materialized_segments,
+                          size_t cluster_count)
       : _partition_size(cluster_count),
         _bitshift_count{32u - simd_sort::log2_builtin(cluster_count)},
         _radix_mask{(1u << simd_sort::log2_builtin(cluster_count)) - 1},
         _has_data(true),
-        _elements(elements) {}
+        _materialized_segments(std::move(materialized_segments)) {}
 
   RadixPartition() = default;
 
@@ -82,7 +84,7 @@ struct RadixPartition {
   uint32_t _radix_mask{};
   bool _has_data = false;
   bool _executed = false;
-  std::span<SimdElement> _elements;
+  std::vector<std::span<MaterializedValue<ColumnType>>> _materialized_segments;
   std::vector<Bucket> _partitions;
   std::vector<std::size_t> _partiton_offsets;
 
@@ -95,16 +97,26 @@ struct RadixPartition {
     return key & _radix_mask;  // LSB
   }
 
-  HistogramData _compute_histogram() {
+  void _iterate_over_segments(auto&& func) {
+    for (auto& segment : _materialized_segments) {
+      for (auto& value : segment) {
+        func(value);
+      }
+    }
+  }
+
+  HistogramData _compute_histogram(auto&& transform_to_simd_element) {
     auto histogram_data = HistogramData(_partition_size);
     auto& histogram = histogram_data.histogram;
     auto& cache_aligned_counts = histogram_data.cache_aligned_counts;
 
-    for (auto& element : _elements) {
-      const auto bucket_index = _bucket_index(element.key);
+    _iterate_over_segments([&](MaterializedValue<ColumnType>& value) {
+      value.element = transform_to_simd_element(value);
+      const auto bucket_index = _bucket_index(value.element.key);
       __builtin_prefetch(histogram.data() + bucket_index, 1, 3);
       ++histogram[bucket_index];
-    }
+    });
+
     auto cache_aligned_output_size = std::size_t{0};
     for (auto bucket_index = std::size_t{0}; bucket_index < _partition_size; ++bucket_index) {
       cache_aligned_counts[bucket_index] = _align_to_cacheline(histogram[bucket_index]);
@@ -135,13 +147,8 @@ struct RadixPartition {
   }
 
  public:
-  void set_element(std::span<SimdElement> elements) {
-    _has_data = true;
-    _elements = elements;
-  }
-
-  void execute(simd_sort::simd_vector<SimdElement>& storage_memory,
-               simd_sort::simd_vector<SimdElement>& working_memory) {
+  void execute(simd_sort::simd_vector<SimdElement>& storage_memory, simd_sort::simd_vector<SimdElement>& working_memory,
+               auto&& transform_to_simd_element) {
     DebugAssert(_has_data, "No input data to partition.");
     DebugAssert(!_executed, "RadixPartition execute can only be called once.");
 
@@ -152,11 +159,17 @@ struct RadixPartition {
       _partitions.resize(_partition_size);
       _partiton_offsets.resize(_partition_size);
 
-      const auto cluster_size = _elements.size();
-      storage_memory.resize(cluster_size);
+      const auto cluster_size = std::accumulate(_materialized_segments.begin(), _materialized_segments.end(), size_t{0},
+                                                [](size_t sum, auto& segment) {
+                                                  return std::move(sum) + segment.size();
+                                                });
+      storage_memory.reserve(cluster_size);
       working_memory.resize(cluster_size);
 
-      std::ranges::copy(_elements, storage_memory.begin());
+      _iterate_over_segments([&](MaterializedValue<ColumnType>& value) {
+        storage_memory.push_back(transform_to_simd_element(value));
+      });
+
       _partiton_offsets[0] = 0;
       auto& bucket = _partitions[0];
       bucket.data = storage_memory.data();
@@ -166,7 +179,7 @@ struct RadixPartition {
     }
 
     auto start_compute_histogram = std::chrono::high_resolution_clock::now();
-    auto histogram_data = std::move(_compute_histogram());
+    auto histogram_data = std::move(_compute_histogram(transform_to_simd_element));
     auto& histogram = histogram_data.histogram;
     auto& cache_aligned_counts = histogram_data.cache_aligned_counts;
 
@@ -203,8 +216,11 @@ struct RadixPartition {
     time_init_buffer = duration_cast<std::chrono::milliseconds>(end_init_buffer - start_init_buffer).count();
 
     auto start_partitioning = std::chrono::high_resolution_clock::now();
-    for (auto& element : _elements) {
+
+    _iterate_over_segments([&](MaterializedValue<ColumnType>& value) {
+      auto& element = value.element;
       const auto bucket_index = _bucket_index(element.key);
+
       __builtin_prefetch(buffers.data() + bucket_index, 1, 3);
       auto& buffer = buffers[bucket_index];
       auto slot = buffer.data.output_offset;
@@ -221,7 +237,7 @@ struct RadixPartition {
         // std::memcpy(destination, source, 8 * BUFFER_SIZE);
       }
       buffer.data.output_offset = slot + 1;
-    }
+    });
 
     for (auto bucket_index = std::size_t{0}; bucket_index < _partition_size; ++bucket_index) {
       __builtin_prefetch(buffers.data() + bucket_index, 1, 3);

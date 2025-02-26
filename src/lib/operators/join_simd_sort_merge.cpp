@@ -224,6 +224,9 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
   RowIDPosList _null_rows_left;
   RowIDPosList _null_rows_right;
 
+  ColumnType _min_value;
+  ColumnType _max_value;
+
   SimdElementList _simd_elements_left;
   SimdElementList _simd_elements_right;
 
@@ -689,30 +692,57 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
     Hyrise::get().scheduler()->schedule_and_wait_for_tasks(jobs);
   }
 
-  std::vector<std::span<SimdElement>> _split_vector_into_spans(SimdElementList& vec, size_t parts) {
-    size_t total_size = vec.size();
+  std::vector<std::vector<std::span<MaterializedValue<ColumnType>>>> _split_vector_into_spans(
+      MaterializedSegmentList<ColumnType>& materialized_segments, const size_t total_size, size_t parts) {
     size_t chunk_size = total_size / parts;
     size_t remainder = total_size % parts;
 
-    std::vector<std::span<SimdElement>> chunks;
+    auto chunks = std::vector<std::vector<std::span<MaterializedValue<ColumnType>>>>(parts);
     size_t start = 0;
+
+    auto segment_id = size_t{0};
+    auto segment_offset = size_t{0};
+    auto segment_index = size_t{0};
 
     for (size_t i = 0; i < parts; ++i) {
       size_t end = start + chunk_size + (i < remainder ? 1 : 0);  // Distribute the remainder.
-      chunks.emplace_back(vec.data() + start, end - start);
+      auto& chunk = chunks[i];
+      while (segment_index < end) {
+        auto& segment = materialized_segments[segment_id];
+
+        auto diff = end - segment_index;
+        auto rem = materialized_segments[segment_id].size() - segment_offset;
+
+        if (diff < rem) {
+          chunk.emplace_back(segment.begin() + segment_offset, segment.begin() + segment_offset + diff);
+          segment_offset += diff;
+          segment_index += diff;
+        } else {
+          chunk.emplace_back(segment.begin() + segment_offset, segment.end());
+          ++segment_id;
+          segment_offset = 0;
+          segment_index += rem;
+        }
+      }
+      DebugAssert(segment_index == end, "end index was not reached");
       start = end;
     }
     return chunks;
   }
 
   template <typename SortingType, OperatorSteps partition_step, OperatorSteps sort_buckets_step>
-  std::vector<SimdElementList> _sort_relation(SimdElementList& simd_elements) {
+  std::vector<SimdElementList> _sort_relation(MaterializedSegmentList<ColumnType>& materialized_segments,
+                                              auto&& pack_row_id) {
     auto timer = Timer{};
     constexpr auto MIN_PARTITION_ELEMENTS = 1048576;
 
-    // const auto chunk_count = std::max(size_t{1}, static_cast<size_t>(simd_elements.size() / MIN_PARTITION_ELEMENTS));
-    const auto chunk_count = (simd_elements.size() <= MIN_PARTITION_ELEMENTS) ? 1 : _num_cpus;
-    auto chunks = std::move(_split_vector_into_spans(simd_elements, chunk_count));
+    auto element_count = std::accumulate(materialized_segments.begin(), materialized_segments.end(), size_t{0},
+                                         [](size_t sum, auto& segment) {
+                                           return std::move(sum) + segment.size();
+                                         });
+
+    const auto chunk_count = (element_count <= MIN_PARTITION_ELEMENTS) ? 1 : _num_cpus;
+    auto chunks = std::move(_split_vector_into_spans(materialized_segments, element_count, chunk_count));
 
     auto partition_storage = std::vector<SimdElementList>(chunk_count);
     auto working_memory = std::vector<SimdElementList>(chunk_count);
@@ -745,15 +775,30 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
     auto chunk_partitions = std::vector<RadixPartition<ColumnType>>{};
     chunk_partitions.reserve(chunk_count);
 
+    auto transform_to_simd_element = [&](MaterializedValue<ColumnType>& value) {
+      const auto sorting_key = Data32BitCompression<ColumnType>::compress(value.value, _min_value, _max_value);
+      return SimdElement{pack_row_id(value.row_id), sorting_key};
+    };
+
     auto partition_and_sort_chunk = [&](size_t chunk_index) {
       // First, we partition the chunk
       auto& chunk_working_memory = working_memory[chunk_index];
       auto& radix_partition = chunk_partitions[chunk_index];
-      radix_partition.execute(partition_storage[chunk_index], chunk_working_memory);
+      radix_partition.execute(partition_storage[chunk_index], chunk_working_memory, transform_to_simd_element);
 
+      auto sort_tasks = std::vector<std::shared_ptr<AbstractTask>>{};
+      sort_tasks.reserve(_cluster_count);
       for (auto bucket_index = size_t{0}; bucket_index < _cluster_count; ++bucket_index) {
-        sort_bucket(bucket_index, radix_partition, chunk_working_memory);
+        if (radix_partition.bucket(bucket_index).size > JOB_SPAWN_THRESHOLD) {
+          sort_tasks.emplace_back(std::make_shared<JobTask>([&, bucket_index]() {
+            sort_bucket(bucket_index, radix_partition, chunk_working_memory);
+          }));
+
+        } else {
+          sort_bucket(bucket_index, radix_partition, chunk_working_memory);
+        }
       }
+      Hyrise::get().scheduler()->schedule_and_wait_for_tasks(sort_tasks);
     };
 
     auto jobs = std::vector<std::shared_ptr<AbstractTask>>{};
@@ -807,11 +852,10 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
     auto [materialized_segments, null_rows, chunk_count, max_chunk_size, min, max] =
         std::move(left_column_materializer.materialize(table, column_id));
 
-    auto chunk_id_bits = static_cast<uint32_t>(std::ceil(std::log2(static_cast<double>(chunk_count))));
-    chunk_offset_bits = static_cast<uint32_t>(std::ceil(std::log2(static_cast<double>(max_chunk_size))));
-
-    // std::cout << chunk_count << ": " << chunk_id_bits << ", " << max_chunk_size << ": " << chunk_offset_bits
-    //           << std::endl;
+    auto chunk_id_bits =
+        chunk_count == 0 ? 0 : static_cast<uint32_t>(std::ceil(std::log2(static_cast<double>(chunk_count))));
+    chunk_offset_bits =
+        max_chunk_size == 0 ? 0 : static_cast<uint32_t>(std::ceil(std::log2(static_cast<double>(max_chunk_size))));
 
     Assert(chunk_id_bits + chunk_offset_bits <= 32, "RowIDs can't be compressed to 32-bits.");
 
@@ -820,48 +864,6 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
     _performance.set_step_runtime(materialize_step, timer.lap());
 
     return {min, max};
-  }
-
-  template <typename T, JoinSimdSortMerge::OperatorSteps transform_step>
-  void _transform_to_simd_format(MaterializedSegmentList<T>& materialized_segments, SimdElementList& simd_element_list,
-                                 auto&& pack_row_id, T min_value, T max_value) {
-    auto timer = Timer{};
-
-    auto total_size = std::accumulate(materialized_segments.begin(), materialized_segments.end(), size_t{0},
-                                      [](size_t sum, auto& segment) {
-                                        return std::move(sum) + segment.size();
-                                      });
-
-    DebugAssert(total_size <= std::numeric_limits<uint32_t>::max(), "Index has to fit into 32 bits. ");
-    simd_element_list.resize(total_size);
-
-    auto transform_segment = [&](const size_t start_index, std::span<MaterializedValue<T>> segment) {
-      auto index = start_index;
-      const auto segment_size = segment.size();
-      for (auto segment_index = size_t{0}; segment_index < segment_size; ++segment_index) {
-        auto& materialized_value = segment[segment_index];
-        auto& simd_element = simd_element_list[index + segment_index];
-        const auto sorting_key = Data32BitCompression<T>::compress(materialized_value.value, min_value, max_value);
-        simd_element = SimdElement{pack_row_id(materialized_value.row_id), sorting_key};
-      }
-    };
-
-    auto jobs = std::vector<std::shared_ptr<AbstractTask>>{};
-
-    auto index = size_t{0};
-    for (auto& segment : materialized_segments) {
-      if (segment.size() > JOB_SPAWN_THRESHOLD) {
-        jobs.push_back(std::make_shared<JobTask>([&, index]() {
-          transform_segment(index, segment);
-        }));
-      } else {
-        transform_segment(index, segment);
-      }
-      index += segment.size();
-    }
-    Hyrise::get().scheduler()->schedule_and_wait_for_tasks(jobs);
-
-    _performance.set_step_runtime(transform_step, timer.lap());
   }
 
   MaterializedSegment<ColumnType> _flatten(MaterializedSegmentList<ColumnType>& materialized_segments) {
@@ -951,8 +953,8 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
         _right_input_table, _primary_right_column_id, materialized_segments_right, _null_rows_right, include_null_right,
         _chunk_offset_bits_right);
 
-    const auto min_value = std::min(min_left, min_right);
-    const auto max_value = std::max(max_left, max_right);
+    _min_value = std::min(min_left, min_right);
+    _max_value = std::max(max_left, max_right);
 
     auto pack_left_row_id = [this](RowID& row_id) {
       return _pack_row_id(row_id, _chunk_offset_bits_left);
@@ -967,17 +969,11 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
       return _unpack_row_id(packed, _chunk_offset_bits_right);
     };
 
-    _transform_to_simd_format<ColumnType, LeftSideTransform>(materialized_segments_left, _simd_elements_left,
-                                                             pack_left_row_id, min_value, max_value);
+    _sorted_per_hash_left = std::move(_sort_relation<SortingType, LeftSidePartition, LeftSideSortBuckets>(
+        materialized_segments_left, pack_left_row_id));
 
-    _transform_to_simd_format<ColumnType, RightSideTransform>(materialized_segments_right, _simd_elements_right,
-                                                              pack_right_row_id, min_value, max_value);
-
-    _sorted_per_hash_left =
-        std::move(_sort_relation<SortingType, LeftSidePartition, LeftSideSortBuckets>(_simd_elements_left));
-
-    _sorted_per_hash_right =
-        std::move(_sort_relation<SortingType, RightSidePartition, RightSideSortBuckets>(_simd_elements_right));
+    _sorted_per_hash_right = std::move(_sort_relation<SortingType, RightSidePartition, RightSideSortBuckets>(
+        materialized_segments_right, pack_right_row_id));
 
     auto timer = Timer{};
 

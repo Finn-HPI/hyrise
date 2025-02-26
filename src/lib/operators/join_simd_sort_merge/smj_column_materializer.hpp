@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "hyrise.hpp"
+#include "operators/join_simd_sort_merge/util.hpp"
 #include "resolve_type.hpp"
 #include "scheduler/job_task.hpp"
 #include "storage/create_iterable_from_segment.hpp"
@@ -27,7 +28,11 @@ struct MaterializedValue {
   MaterializedValue(ChunkID chunk_id, ChunkOffset chunk_offset, T init_value)
       : row_id{chunk_id, chunk_offset}, value{init_value} {}
 
-  RowID row_id;
+  union {
+    RowID row_id;
+    SimdElement element{};
+  };
+
   T value;
 };
 
