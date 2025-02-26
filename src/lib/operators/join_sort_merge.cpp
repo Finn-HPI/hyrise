@@ -516,7 +516,7 @@ class JoinSortMerge::JoinSortMergeImpl : public AbstractReadOnlyOperatorImpl {
       return std::distance(begin, linear_search_result);
     }
 
-    if (linear_search_result == values.end()) {
+    if (linear_search_result == values.end() || end->value > run_value) {
       // We did not find a larger value in the linearly scanned part and it spanned until the end of the input vector.
       // That means all values up to the end are part of the run.
       return std::distance(begin, end);
