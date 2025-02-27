@@ -234,6 +234,7 @@ set(
     operators/join_simd_sort_merge/merge_path.hpp
     operators/join_simd_sort_merge/k_way_merge.hpp
     operators/join_simd_sort_merge/radix_partitioning.hpp
+    operators/join_simd_sort_merge/radix_partitioning_balkesen.hpp
     operators/join_simd_sort_merge/simd_sort.hpp
     operators/join_simd_sort_merge/smj_column_materializer.hpp
     operators/join_simd_sort_merge/util.hpp

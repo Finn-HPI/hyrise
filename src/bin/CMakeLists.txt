@@ -14,6 +14,7 @@ target_link_libraries(
 add_executable(
     hyrisePlayground
 
+    cpu_mapping.cpp
     playground.cpp
 )
 
