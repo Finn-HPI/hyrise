@@ -16,6 +16,7 @@
 #include "operators/join_simd_sort_merge/simd_sort.hpp"
 #include "operators/join_simd_sort_merge/simd_utils.hpp"
 #include "operators/join_simd_sort_merge/util.hpp"
+#include "rdtsc.hpp"
 #include "scheduler/immediate_execution_scheduler.hpp"
 #include "scheduler/node_queue_scheduler.hpp"
 #include "types.hpp"
@@ -228,6 +229,7 @@ struct ThreadInfo {
   size_t tid{};
   std::vector<simd_sort::simd_vector<RelationPair>>* thread_chunks{};
   size_t results{};
+  uint64_t part{}, sort{}, merge{}, join{};
 };
 
 namespace {
@@ -535,6 +537,10 @@ void join_thread(ThreadInfo& thread_info, std::barrier<>& sync_point [[maybe_unu
   sync_point.arrive_and_wait();
   if (tid == 0) {
     thread_info.start = std::chrono::high_resolution_clock::now();
+    start_timer(&thread_info.part);
+    start_timer(&thread_info.sort);
+    start_timer(&thread_info.merge);
+    start_timer(&thread_info.join);
   }
 
   // Phase 1: Partition
@@ -544,10 +550,16 @@ void join_thread(ThreadInfo& thread_info, std::barrier<>& sync_point [[maybe_unu
   partition_phase(r_buckets, s_buckets, thread_info);
 
   sync_point.arrive_and_wait();
+  if (tid == 0) {
+    stop_timer(&thread_info.part);
+  }
 
   // Phase 2: Sorting local partitions
   sorting_phase(r_buckets, s_buckets, thread_info);
   sync_point.arrive_and_wait();
+  if (tid == 0) {
+    stop_timer(&thread_info.sort);
+  }
 
   // Phase 3: Multiway merging
   auto merged_tuples_r = simd_vector<SimdElement>{};
@@ -558,12 +570,16 @@ void join_thread(ThreadInfo& thread_info, std::barrier<>& sync_point [[maybe_unu
 
   mwaymerge_phase(merged_tuples_r, merged_tuples_s, merged_r, merged_s, thread_info, thread_count);
   sync_point.arrive_and_wait();
+  if (tid == 0) {
+    stop_timer(&thread_info.merge);
+  }
 
   // Phase 4: Join
   join_phase(merged_r, merged_s, thread_info);
   sync_point.arrive_and_wait();
 
   if (tid == 0) {
+    stop_timer(&thread_info.join);
     thread_info.end = std::chrono::high_resolution_clock::now();
   }
 }
@@ -636,7 +652,16 @@ size_t simd_sort_merge_join(Relation* relation_r, Relation* relation_s) {
         return sum + info.results;
       });
 
-  auto us_time = std::chrono::duration_cast<std::chrono::microseconds>(thread_infos[0].end - thread_infos[0].start);
+  auto& info = thread_infos[0];
+
+  auto us_time = std::chrono::duration_cast<std::chrono::microseconds>(info.end - info.start);
+
+  const auto total = info.join;
+  std::cout << "Total, Partitioning, Sort, Merge, Join" << "\n";
+  std::cout << total << ", " << info.part << ", " << info.sort << ", " << info.merge << ", " << info.join << '\n';
+  std::cout << "Per-stage: " << info.part << ", " << (info.sort - info.part) << ", " << (info.merge - info.sort) << ", "
+            << (info.join - info.merge) << '\n';
+
   std::cout << "TOTAL-TIME-USECS: " << us_time << '\n';
   std::cout << "[INFO] Results: " << total_results << '\n';
 
