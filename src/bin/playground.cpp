@@ -243,7 +243,8 @@ using namespace hyrise::multiway_merging;
   for (index = 0; index < nitems; index++) {
     if (tuples[index].key == curr) {
       if (!warned) {
-        std::cout << "[WARN] Equal items, still ok... item[" << index << "].key=" << tuples[index].key << std::endl;
+        warned = true;
+        // std::cout << "[WARN] Equal items, still ok... item[" << index << "].key=" << tuples[index].key << std::endl;
       }
     } else if (tuples[index].key < curr) {
       std::cout << "[ERROR] item[" << index << "].key=" << tuples[index].key << " is less than item[" << (index - 1)
@@ -274,7 +275,7 @@ void partition_phase(std::span<Relation> buckets_r, std::span<Relation> buckets_
   }
 }
 
-constexpr std::size_t choose_count_per_vector() {
+[[maybe_unused]] constexpr std::size_t choose_count_per_vector() {
 #if defined(__AVX512F__)
   return 8;
 #else
@@ -428,9 +429,10 @@ size_t join_per_hash(std::span<SimdElement> left_elements, std::span<SimdElement
   return matches;
 }
 
-void sorting_phase(std::span<Relation> buckets_r, std::span<Relation> buckets_s, ThreadInfo& thread_info) {
+[[maybe_unused]] void sorting_phase(std::span<Relation> buckets_r, std::span<Relation> buckets_s,
+                                    ThreadInfo& thread_info) {
   const auto tid = thread_info.tid;
-  const auto count_per_vector = choose_count_per_vector();
+  [[maybe_unused]] const auto count_per_vector = choose_count_per_vector();
 
   auto& thread_chunks = *(thread_info.thread_chunks);
 
@@ -441,12 +443,17 @@ void sorting_phase(std::span<Relation> buckets_r, std::span<Relation> buckets_s,
   auto* sort_outupt_begin = thread_info.tmp_sort_r + (tid * cache_line_padding(CLUSTER_COUNT));
   for (auto bucket_index = size_t{0}; bucket_index < CLUSTER_COUNT; ++bucket_index) {
     auto num_tuples_in_bucket = buckets_r[bucket_index].num_tuples;
+
     auto* input_pointer = reinterpret_cast<SortingType*>(buckets_r[bucket_index].tuples);
     auto* output_pointer = reinterpret_cast<SortingType*>(sort_outupt_begin + offset);
     offset += align_to_cacheline(num_tuples_in_bucket);
 
+    DebugAssert((simd_sort::is_simd_aligned<SortingType, 64>(input_pointer)), "Input not cache aligned.");
+    DebugAssert((simd_sort::is_simd_aligned<SortingType, 64>(output_pointer)), "Output not cache aligned.");
+
     simd_sort::sort<count_per_vector, SortingType, ExecutionStrategy::SEQUENTIAL>(input_pointer, output_pointer,
                                                                                   num_tuples_in_bucket);
+
     // if (!is_sorted_helper(output_pointer, num_tuples_in_bucket)) {
     //   std::cout << "===> " << tid << "-thread -> R is NOT sorted, size = " << num_tuples_in_bucket << std::endl;
     // }
@@ -473,8 +480,9 @@ void sorting_phase(std::span<Relation> buckets_r, std::span<Relation> buckets_s,
   }
 }
 
-void mwaymerge_phase(simd_vector<SimdElement>& merged_tuples_r, simd_vector<SimdElement>& merged_tuples_s,
-                     Relation& merged_r, Relation& merged_s, ThreadInfo& thread_info, size_t thread_count) {
+[[maybe_unused]] void mwaymerge_phase(simd_vector<SimdElement>& merged_tuples_r,
+                                      simd_vector<SimdElement>& merged_tuples_s, Relation& merged_r, Relation& merged_s,
+                                      ThreadInfo& thread_info, size_t thread_count) {
   const auto curr_tid = thread_info.tid;
   const auto bucket_ids_per_thread = CLUSTER_COUNT / thread_count;
   const auto start_bucket_id = curr_tid * bucket_ids_per_thread;
@@ -515,13 +523,14 @@ void mwaymerge_phase(simd_vector<SimdElement>& merged_tuples_r, simd_vector<Simd
   merged_s.num_tuples = output_size_s;
 }
 
-void join_phase(Relation& merged_r, Relation& merged_s, ThreadInfo& thread_info) {
+[[maybe_unused]] void join_phase(Relation& merged_r, Relation& merged_s, ThreadInfo& thread_info) {
   const auto results =
       join_per_hash(std::span(merged_r.tuples, merged_r.num_tuples), std::span(merged_s.tuples, merged_s.num_tuples));
   thread_info.results = results;
 }
 
-void join_thread(ThreadInfo& thread_info, std::barrier<>& sync_point, size_t thread_count) {
+void join_thread(ThreadInfo& thread_info, std::barrier<>& sync_point [[maybe_unused]],
+                 size_t thread_count [[maybe_unused]]) {
   const auto tid = thread_info.tid;
   sync_point.arrive_and_wait();
   if (tid == 0) {
@@ -533,19 +542,12 @@ void join_thread(ThreadInfo& thread_info, std::barrier<>& sync_point, size_t thr
   auto r_buckets = std::span(buckets.data(), CLUSTER_COUNT);
   auto s_buckets = std::span(buckets.data() + CLUSTER_COUNT, CLUSTER_COUNT);
   partition_phase(r_buckets, s_buckets, thread_info);
+
   sync_point.arrive_and_wait();
 
   // Phase 2: Sorting local partitions
   sorting_phase(r_buckets, s_buckets, thread_info);
   sync_point.arrive_and_wait();
-
-  // for (auto& bucket : r_buckets) {
-  //   for (auto index = size_t{0}; index < bucket.num_tuples; ++index) {
-  //     auto& tuple = bucket.tuples[index];
-  //     std::cout << tuple;
-  //   }
-  //   std::cout << "\n\n";
-  // }
 
   // Phase 3: Multiway merging
   auto merged_tuples_r = simd_vector<SimdElement>{};
@@ -588,7 +590,9 @@ size_t simd_sort_merge_join(Relation* relation_r, Relation* relation_s) {
 
   auto thread_infos = std::vector<ThreadInfo>(thread_count);
 
-  auto threads = std::vector<std::shared_ptr<AbstractTask>>{};
+  // auto threads = std::vector<std::shared_ptr<AbstractTask>>{};
+  // threads.reserve(thread_count);
+  std::vector<std::jthread> threads;
   threads.reserve(thread_count);
 
   auto sync_point = std::barrier(static_cast<std::ptrdiff_t>(thread_count));
@@ -601,6 +605,9 @@ size_t simd_sort_merge_join(Relation* relation_r, Relation* relation_s) {
     info.tmp_part_r = temp_partition_r.data() + thread_id * (count_per_thread[0] + cache_line_padding(CLUSTER_COUNT));
     info.tmp_part_s = temp_partition_s.data() + thread_id * (count_per_thread[1] + cache_line_padding(CLUSTER_COUNT));
 
+    info.tmp_sort_r = temp_sorting_r.data() + thread_id * (count_per_thread[0]);
+    info.tmp_sort_s = temp_sorting_s.data() + thread_id * (count_per_thread[1]);
+
     info.num_r = (thread_id == (thread_count - 1)) ? (relation_r->num_tuples - (thread_id * count_per_thread[0]))
                                                    : count_per_thread[0];
     info.num_s = (thread_id == (thread_count - 1)) ? (relation_s->num_tuples - (thread_id * count_per_thread[1]))
@@ -608,12 +615,21 @@ size_t simd_sort_merge_join(Relation* relation_r, Relation* relation_s) {
 
     info.thread_chunks = &thread_chunks;
 
-    threads.push_back(std::make_shared<JobTask>([&, thread_id]() {
+    // threads.push_back(std::make_shared<JobTask>([&, thread_id]() {
+    //   join_thread(thread_infos[thread_id], sync_point, thread_count);
+    // }));
+
+    auto work = [&, thread_id]() {
       join_thread(thread_infos[thread_id], sync_point, thread_count);
-    }));
+    };
+    threads.emplace_back(work);
   }
 
-  Hyrise::get().scheduler()->schedule_and_wait_for_tasks(threads);
+  for (auto& thread : threads) {
+    thread.join();
+  }
+
+  // Hyrise::get().scheduler()->schedule_and_wait_for_tasks(threads);
 
   const auto total_results =
       std::accumulate(thread_infos.begin(), thread_infos.end(), size_t{0}, [](size_t sum, auto& info) {
@@ -630,8 +646,9 @@ size_t simd_sort_merge_join(Relation* relation_r, Relation* relation_s) {
 }  // namespace
 
 int main() {
-  const auto r_size = 1024;
-  const auto s_size = 1024;
+  const auto r_size = 16000000;
+  const auto s_size = 16000000;
+
   const auto num_threads = 16;
 
   std::cout << "Create R rleation." << '\n';
