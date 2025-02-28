@@ -16,6 +16,7 @@
 #include "operators/join_simd_sort_merge/simd_sort.hpp"
 #include "operators/join_simd_sort_merge/simd_utils.hpp"
 #include "operators/join_simd_sort_merge/util.hpp"
+#include "partition.hpp"
 #include "rdtsc.hpp"
 #include "scheduler/immediate_execution_scheduler.hpp"
 #include "scheduler/node_queue_scheduler.hpp"
@@ -260,7 +261,8 @@ using namespace hyrise::multiway_merging;
   return true;
 }
 
-void partition_phase(std::span<Relation> buckets_r, std::span<Relation> buckets_s, ThreadInfo& thread_info) {
+[[maybe_unused]] void partition_phase(std::span<Relation> buckets_r, std::span<Relation> buckets_s,
+                                      ThreadInfo& thread_info) {
   auto chunk_r = Relation{.tuples = thread_info.rel_r, .num_tuples = thread_info.num_r};
   auto chunk_s = Relation{.tuples = thread_info.rel_s, .num_tuples = thread_info.num_s};
 
@@ -275,6 +277,23 @@ void partition_phase(std::span<Relation> buckets_r, std::span<Relation> buckets_
     auto radix_partition_s = RadixPartitionBalkesen<ColumnType>(&chunk_s, &tmp_chunk_s, buckets_s, CLUSTER_COUNT);
     radix_partition_s.execute();
   }
+}
+
+void partition_phase2(std::span<Relation> buckets_r, std::span<Relation> buckets_s, ThreadInfo& thread_info,
+                      size_t num_threads) {
+  const auto nradixbits = static_cast<int>(log2(CLUSTER_COUNT));
+
+  auto chunk_r = Relation{.tuples = thread_info.rel_r, .num_tuples = thread_info.num_r};
+  auto chunk_s = Relation{.tuples = thread_info.rel_s, .num_tuples = thread_info.num_s};
+
+  auto tmp_chunk_r = Relation{.tuples = thread_info.tmp_part_r, .num_tuples = thread_info.num_r};
+  auto tmp_chunk_s = Relation{.tuples = thread_info.tmp_part_s, .num_tuples = thread_info.num_s};
+
+  int bitshift = static_cast<int>(ceil(log2(static_cast<double>(chunk_r.num_tuples * num_threads))) - 1);
+  bitshift = bitshift - nradixbits - 1;
+
+  partition_relation_optimized(buckets_r, &chunk_r, &tmp_chunk_r, nradixbits, bitshift);
+  partition_relation_optimized(buckets_s, &chunk_s, &tmp_chunk_s, nradixbits, bitshift);
 }
 
 [[maybe_unused]] constexpr std::size_t choose_count_per_vector() {
@@ -547,7 +566,8 @@ void join_thread(ThreadInfo& thread_info, std::barrier<>& sync_point [[maybe_unu
   auto buckets = simd_vector<Relation>(CLUSTER_COUNT * 2);
   auto r_buckets = std::span(buckets.data(), CLUSTER_COUNT);
   auto s_buckets = std::span(buckets.data() + CLUSTER_COUNT, CLUSTER_COUNT);
-  partition_phase(r_buckets, s_buckets, thread_info);
+  // partition_phase(r_buckets, s_buckets, thread_info);
+  partition_phase2(r_buckets, s_buckets, thread_info, thread_count);
 
   sync_point.arrive_and_wait();
   if (tid == 0) {
@@ -671,10 +691,12 @@ size_t simd_sort_merge_join(Relation* relation_r, Relation* relation_s) {
 }  // namespace
 
 int main() {
-  const auto r_size = 16000000;
-  const auto s_size = 16000000;
+  const auto r_size = 1'600'000'000;
+  const auto s_size = 1'600'000'000;
+  // const auto r_size = 16000000;
+  // const auto s_size = 16000000;
 
-  const auto num_threads = 16;
+  const auto num_threads = 128;
 
   std::cout << "Create R rleation." << '\n';
 

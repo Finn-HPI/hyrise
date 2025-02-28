@@ -15,6 +15,7 @@ add_executable(
     hyrisePlayground
 
     cpu_mapping.cpp
+    partition.cpp
     playground.cpp
 )
 
