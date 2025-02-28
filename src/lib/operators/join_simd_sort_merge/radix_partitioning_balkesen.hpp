@@ -17,12 +17,15 @@ using cache_aligned_vector = simd_sort::simd_vector<T>;
 template <typename ColumnType>
 struct RadixPartitionBalkesen {
  public:
-  explicit RadixPartitionBalkesen(const std::span<SimdElement> elements, size_t cluster_count)
+  explicit RadixPartitionBalkesen(Relation* input, Relation* tmp_output, const std::span<Relation> output_buckets,
+                                  size_t cluster_count)
       : _partition_size(cluster_count),
         _bitshift_count{32u - simd_sort::log2_builtin(cluster_count)},
         _radix_mask{(1u << simd_sort::log2_builtin(cluster_count)) - 1},
         _has_data(true),
-        _elements{elements} {}
+        _input{input},
+        _tmp_output{tmp_output},
+        _output_buckets{output_buckets} {}
 
   RadixPartitionBalkesen() = default;
 
@@ -54,13 +57,10 @@ struct RadixPartitionBalkesen {
   uint32_t _radix_mask{};
   bool _has_data = false;
   bool _executed = false;
-  std::span<SimdElement> _elements;
-  std::vector<Bucket> _partitions;
-  std::vector<std::size_t> _partiton_offsets;
 
-  static constexpr std::size_t _align_to_cacheline(std::size_t value) {
-    return (value + BUFFER_SIZE - 1) & ~(BUFFER_SIZE - 1);
-  }
+  Relation* _input{};
+  Relation* _tmp_output{};
+  std::span<Relation> _output_buckets;
 
   size_t _bucket_index(uint32_t key) {
     // return key >> _bitshift_count; // MSB
@@ -72,7 +72,11 @@ struct RadixPartitionBalkesen {
     auto& histogram = histogram_data.histogram;
     auto& cache_aligned_counts = histogram_data.cache_aligned_counts;
 
-    for (auto& element : _elements) {
+    auto* elements = _input->tuples;
+    const auto num_elements = _input->num_tuples;
+
+    for (auto index = size_t{0}; index < num_elements; ++index) {
+      auto& element = *(elements + index);
       const auto bucket_index = _bucket_index(element.key);
       __builtin_prefetch(histogram.data() + bucket_index, 1, 3);
       ++histogram[bucket_index];
@@ -80,7 +84,7 @@ struct RadixPartitionBalkesen {
 
     auto cache_aligned_output_size = std::size_t{0};
     for (auto bucket_index = std::size_t{0}; bucket_index < _partition_size; ++bucket_index) {
-      cache_aligned_counts[bucket_index] = _align_to_cacheline(histogram[bucket_index]);
+      cache_aligned_counts[bucket_index] = align_to_cacheline(histogram[bucket_index]);
       cache_aligned_output_size += cache_aligned_counts[bucket_index];
     }
 
@@ -108,33 +112,33 @@ struct RadixPartitionBalkesen {
   }
 
  public:
-  void execute(simd_sort::simd_vector<SimdElement>& storage_memory,
-               simd_sort::simd_vector<SimdElement>& working_memory) {
+  void execute() {
     DebugAssert(_has_data, "No input data to partition.");
     DebugAssert(!_executed, "RadixPartition execute can only be called once.");
 
     // NOLINTNEXTLINE
     size_t time_histogram, time_init_buffer, time_partition_elements;
 
-    if (_partition_size == 1) {
-      _partitions.resize(_partition_size);
-      _partiton_offsets.resize(_partition_size);
-
-      const auto cluster_size = _elements.size();
-      storage_memory.reserve(cluster_size);
-      working_memory.resize(cluster_size);
-
-      std::ranges::copy(_elements, storage_memory.begin());
-
-      _partiton_offsets[0] = 0;
-      auto& bucket = _partitions[0];
-      bucket.data = storage_memory.data();
-      bucket.size = cluster_size;
-      _executed = true;
-      return;
-    }
+    //TODO(finn): Implement partition size 1.
+    // if (_partition_size == 1) {
+    //   _partitions.resize(_partition_size);
+    //   _partiton_offsets.resize(_partition_size);
+    //
+    //   const auto cluster_size = _elements.size();
+    //   storage_memory.reserve(cluster_size);
+    //
+    //   std::ranges::copy(_elements, storage_memory.begin());
+    //
+    //   _partiton_offsets[0] = 0;
+    //   auto& bucket = _partitions[0];
+    //   bucket.data = storage_memory.data();
+    //   bucket.size = cluster_size;
+    //   _executed = true;
+    //   return;
+    // }
 
     auto start_compute_histogram = std::chrono::high_resolution_clock::now();
+
     auto histogram_data = std::move(_compute_histogram());
     auto& histogram = histogram_data.histogram;
     auto& cache_aligned_counts = histogram_data.cache_aligned_counts;
@@ -144,28 +148,21 @@ struct RadixPartitionBalkesen {
 
     auto start_init_buffer = std::chrono::high_resolution_clock::now();
 
-    _partitions.resize(_partition_size);
-    _partiton_offsets.resize(_partition_size);
-
-    storage_memory.resize(histogram_data.cache_aligned_size);
-    working_memory.resize(histogram_data.cache_aligned_size);
-
-    auto* output_start_address = storage_memory.data();
+    auto* output_start_address = _tmp_output->tuples;
 
     auto buffers = cache_aligned_vector<CacheLine>(_partition_size);  // Cacheline aligned (64-bit).
     buffers[0].data.output_offset = 0;
-    _partitions[0].size = histogram[0];
-    _partitions[0].data = output_start_address;
-    _partiton_offsets[0] = 0;
+
+    _output_buckets[0].num_tuples = histogram[0];
+    _output_buckets[0].tuples = output_start_address;
 
     for (auto bucket_index = std::size_t{1}; bucket_index < _partition_size; ++bucket_index) {
       buffers[bucket_index].data.output_offset =
           buffers[bucket_index - 1].data.output_offset + cache_aligned_counts[bucket_index - 1];
 
-      auto& partition = _partitions[bucket_index];
-      _partiton_offsets[bucket_index] = buffers[bucket_index].data.output_offset;
-      partition.size = histogram[bucket_index];
-      partition.data = output_start_address + buffers[bucket_index].data.output_offset;
+      auto& partition = _output_buckets[bucket_index];
+      partition.num_tuples = histogram[bucket_index];
+      partition.tuples = output_start_address + buffers[bucket_index].data.output_offset;
     }
 
     auto end_init_buffer = std::chrono::high_resolution_clock::now();
@@ -173,7 +170,12 @@ struct RadixPartitionBalkesen {
 
     auto start_partitioning = std::chrono::high_resolution_clock::now();
 
-    for (auto& element : _elements) {
+    auto* elements = _input->tuples;
+    const auto num_elements = _input->num_tuples;
+
+    for (auto index = size_t{0}; index < num_elements; ++index) {
+      auto& element = *(elements + index);
+
       const auto bucket_index = _bucket_index(element.key);
 
       __builtin_prefetch(buffers.data() + bucket_index, 1, 3);
@@ -189,7 +191,6 @@ struct RadixPartitionBalkesen {
           const auto offset = cache_line_index * TUPLES_PER_CACHELINE;
           _store_cacheline(destination + offset, source + offset);
         }
-        // std::memcpy(destination, source, 8 * BUFFER_SIZE);
       }
       buffer.data.output_offset = slot + 1;
     }
@@ -215,24 +216,24 @@ struct RadixPartitionBalkesen {
     return _partition_size;
   }
 
-  Bucket& bucket(std::size_t index) {
-    DebugAssert(_executed, "Do not call before execute.");
-    DebugAssert(index >= 0 && index < num_partitions(), "Invalid partition index.");
-    return _partitions[index];
-  }
+  // Bucket& bucket(std::size_t index) {
+  //   DebugAssert(_executed, "Do not call before execute.");
+  //   DebugAssert(index >= 0 && index < num_partitions(), "Invalid partition index.");
+  //   return _partitions[index];
+  // }
+  //
+  // std::vector<Bucket>& buckets() {
+  //   DebugAssert(_executed, "Do not call before execute.");
+  //   return _partitions;
+  // }
 
-  std::vector<Bucket>& buckets() {
-    DebugAssert(_executed, "Do not call before execute.");
-    return _partitions;
-  }
-
-  template <typename T>
-  T* get_working_memory(size_t partition_index, simd_sort::simd_vector<SimdElement>& working_memory) {
-    DebugAssert(_executed, "Do not call before execute.");
-    DebugAssert(partition_index >= 0 && partition_index < num_partitions(), "Invalid partition index.");
-    DebugAssert(_partiton_offsets[partition_index] % 8 == 0, "Offset has to be cache_aligned.");
-    return reinterpret_cast<T*>(working_memory.data() + _partiton_offsets[partition_index]);
-  }
+  // template <typename T>
+  // T* get_working_memory(size_t partition_index, simd_sort::simd_vector<SimdElement>& working_memory) {
+  //   DebugAssert(_executed, "Do not call before execute.");
+  //   DebugAssert(partition_index >= 0 && partition_index < num_partitions(), "Invalid partition index.");
+  //   DebugAssert(_partiton_offsets[partition_index] % 8 == 0, "Offset has to be cache_aligned.");
+  //   return reinterpret_cast<T*>(working_memory.data() + _partiton_offsets[partition_index]);
+  // }
 };
 
 }  // namespace hyrise::radix_partition

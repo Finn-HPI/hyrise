@@ -22,16 +22,19 @@ constexpr auto CACHE_LINE_SIZE = std::size_t{64};
 constexpr auto TUPLES_PER_CACHELINE = CACHE_LINE_SIZE / 8;
 
 // Select number of cache lines depending on underlying hardware
-#if defined(__arm__)
-constexpr auto NUM_CACHE_LINES = 4;
-#elif defined(__powerpc__) || defined(__ppc__) || defined(__PPC__)
+// #if defined(__arm__)
+// constexpr auto NUM_CACHE_LINES = 4;
+// #elif defined(__powerpc__) || defined(__ppc__) || defined(__PPC__)
 constexpr auto NUM_CACHE_LINES = 1;
-#else
-constexpr auto NUM_CACHE_LINES = 2;
-#endif
+// #else
+// constexpr auto NUM_CACHE_LINES = 2;
+// #endif
 
 constexpr auto BUFFER_SIZE = TUPLES_PER_CACHELINE * NUM_CACHE_LINES;
 
+static constexpr std::size_t align_to_cacheline(std::size_t value) {
+  return (value + BUFFER_SIZE - 1) & ~(BUFFER_SIZE - 1);
+}
 }  // namespace radix_partition
 
 constexpr auto THREAD_COUNT = 8;
@@ -52,6 +55,35 @@ struct SimdElement {
   }
 };
 
+struct Relation {
+  SimdElement* tuples;
+  uint64_t num_tuples;
+
+  template <typename T>
+  T* begin() const {
+    return reinterpret_cast<T*>(tuples);
+  }
+
+  template <typename T>
+  T* end() const {
+    return reinterpret_cast<T*>(tuples + num_tuples);
+  }
+
+  bool empty() const {
+    return num_tuples == 0;
+  }
+
+  std::span<SimdElement> elements() const {
+    return {tuples, num_tuples};
+  }
+
+  void retrieve_elements(size_t count) {
+    DebugAssert(count <= num_tuples, "Can not retrieve more elements than currently in Bucket.");
+    num_tuples -= count;
+    tuples += count;
+  }
+};
+
 template <typename T>
 using PerThread = std::array<T, THREAD_COUNT>;
 
@@ -60,7 +92,7 @@ using PerThread = std::array<T, THREAD_COUNT>;
 
 template <typename T>
 void spawn_and_wait_per_thread(PerThread<T>& data, auto&& per_thread_function) {
-  auto tasks = std::vector<std::shared_ptr<AbstractTask>>{};
+  auto tasks = std::vector<std::shared_ptr<AbstractTask> >{};
   tasks.reserve(THREAD_COUNT);
   for (auto thread_index = std::size_t{0}; thread_index < THREAD_COUNT; ++thread_index) {
     tasks.emplace_back(std::make_shared<JobTask>([thread_index, &data, &per_thread_function]() {
@@ -77,7 +109,7 @@ void spawn_and_wait_per_thread(PerThread<T>& data, auto&& per_thread_function) {
 
 template <typename T>
 void spawn_and_wait_per_hash(std::vector<T>& data, const size_t partition_size, auto&& per_hash_function) {
-  auto tasks = std::vector<std::shared_ptr<AbstractTask>>{};
+  auto tasks = std::vector<std::shared_ptr<AbstractTask> >{};
   tasks.reserve(partition_size);
   for (auto bucket_index = std::size_t{0}; bucket_index < partition_size; ++bucket_index) {
     tasks.emplace_back(std::make_shared<JobTask>([bucket_index, &data, &per_hash_function]() {
@@ -93,7 +125,7 @@ void spawn_and_wait_per_hash(std::vector<T>& data, const size_t partition_size, 
 }
 
 void spawn_and_wait_per_hash(const size_t partition_size, auto&& per_hash_function) {
-  auto tasks = std::vector<std::shared_ptr<AbstractTask>>{};
+  auto tasks = std::vector<std::shared_ptr<AbstractTask> >{};
   tasks.reserve(partition_size);
   for (auto bucket_index = std::size_t{0}; bucket_index < partition_size; ++bucket_index) {
     tasks.emplace_back(std::make_shared<JobTask>([bucket_index, &per_hash_function]() {

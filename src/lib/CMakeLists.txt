@@ -230,7 +230,7 @@ set(
     operators/join_simd_sort_merge/abstract_two_way_merge.hpp
     operators/join_simd_sort_merge/two_way_merge.hpp
     operators/join_simd_sort_merge/multiway_merging.hpp
-    operators/join_simd_sort_merge/multiway_merging_par.hpp
+    operators/join_simd_sort_merge/multiway_merging_balkesen.hpp
     operators/join_simd_sort_merge/merge_path.hpp
     operators/join_simd_sort_merge/k_way_merge.hpp
     operators/join_simd_sort_merge/radix_partitioning.hpp
