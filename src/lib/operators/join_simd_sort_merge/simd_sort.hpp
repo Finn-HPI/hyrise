@@ -382,6 +382,6 @@ void sort(T*& input_ptr, T*& output_ptr, std::size_t element_count) {
   input_ptr = merged_chunk.output;
 
   auto sorted_data = std::span(output_ptr, element_count);
-  Assert(std::ranges::is_sorted(sorted_data), "Output data was not sorted");
+  DebugAssert(std::ranges::is_sorted(sorted_data), "Output data was not sorted");
 }
 }  // namespace hyrise::simd_sort
