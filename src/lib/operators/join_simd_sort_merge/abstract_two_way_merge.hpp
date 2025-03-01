@@ -20,10 +20,10 @@ class AbstractTwoWayMerge {
   static void __attribute__((always_inline)) merge_2x_base_size(VecType& in11, VecType& in12, VecType& in21,
                                                                 VecType& in22, VecType& out1, VecType& out2,
                                                                 VecType& out3, VecType& out4) {
-    auto l11 = __builtin_elementwise_min(in11, in21);
-    auto l12 = __builtin_elementwise_min(in12, in22);
-    auto h11 = __builtin_elementwise_max(in11, in21);
-    auto h12 = __builtin_elementwise_max(in12, in22);
+    auto l11 = Derived::elementwise_min(in11, in21);
+    auto l12 = Derived::elementwise_min(in12, in22);
+    auto h11 = Derived::elementwise_max(in11, in21);
+    auto h12 = Derived::elementwise_max(in12, in22);
     Derived::merge_base_size(l11, l12, out1, out2);
     Derived::merge_base_size(h11, h12, out3, out4);
   }
@@ -34,15 +34,15 @@ class AbstractTwoWayMerge {
                                                                 VecType& out2, VecType& out3, VecType& out4,
                                                                 VecType& out5, VecType& out6, VecType& out7,
                                                                 VecType& out8) {
-    auto l11 = __builtin_elementwise_min(in11, in21);
-    auto l12 = __builtin_elementwise_min(in12, in22);
-    auto l13 = __builtin_elementwise_min(in13, in23);
-    auto l14 = __builtin_elementwise_min(in14, in24);
+    auto l11 = Derived::elementwise_min(in11, in21);
+    auto l12 = Derived::elementwise_min(in12, in22);
+    auto l13 = Derived::elementwise_min(in13, in23);
+    auto l14 = Derived::elementwise_min(in14, in24);
 
-    auto h11 = __builtin_elementwise_max(in11, in21);
-    auto h12 = __builtin_elementwise_max(in12, in22);
-    auto h13 = __builtin_elementwise_max(in13, in23);
-    auto h14 = __builtin_elementwise_max(in14, in24);
+    auto h11 = Derived::elementwise_max(in11, in21);
+    auto h12 = Derived::elementwise_max(in12, in22);
+    auto h13 = Derived::elementwise_max(in13, in23);
+    auto h14 = Derived::elementwise_max(in14, in24);
 
     merge_2x_base_size(l11, l12, l13, l14, out1, out2, out3, out4);
     merge_2x_base_size(h11, h12, h13, h14, out5, out6, out7, out8);
@@ -71,10 +71,10 @@ class AbstractTwoWayMerge {
                                                      MultiVecType& out2) {
       Derived::reverse(in2.a);
       Derived::reverse(in2.b);
-      auto l11 = __builtin_elementwise_min(in1.a, in2.b);
-      auto l12 = __builtin_elementwise_min(in1.b, in2.a);
-      auto h11 = __builtin_elementwise_max(in1.a, in2.b);
-      auto h12 = __builtin_elementwise_max(in1.b, in2.a);
+      auto l11 = Derived::elementwise_min(in1.a, in2.b);
+      auto l12 = Derived::elementwise_min(in1.b, in2.a);
+      auto h11 = Derived::elementwise_max(in1.a, in2.b);
+      auto h12 = Derived::elementwise_max(in1.b, in2.a);
       Derived::merge_base_size(l11, l12, out1.a, out1.b);
       Derived::merge_base_size(h11, h12, out2.a, out2.b);
     }
@@ -88,14 +88,14 @@ class AbstractTwoWayMerge {
       Derived::reverse(in2.b);
       Derived::reverse(in2.c);
       Derived::reverse(in2.d);
-      auto l01 = __builtin_elementwise_min(in1.a, in2.d);
-      auto l02 = __builtin_elementwise_min(in1.b, in2.c);
-      auto l03 = __builtin_elementwise_min(in1.c, in2.b);
-      auto l04 = __builtin_elementwise_min(in1.d, in2.a);
-      auto h01 = __builtin_elementwise_max(in1.a, in2.d);
-      auto h02 = __builtin_elementwise_max(in1.b, in2.c);
-      auto h03 = __builtin_elementwise_max(in1.c, in2.b);
-      auto h04 = __builtin_elementwise_max(in1.d, in2.a);
+      auto l01 = Derived::elementwise_min(in1.a, in2.d);
+      auto l02 = Derived::elementwise_min(in1.b, in2.c);
+      auto l03 = Derived::elementwise_min(in1.c, in2.b);
+      auto l04 = Derived::elementwise_min(in1.d, in2.a);
+      auto h01 = Derived::elementwise_max(in1.a, in2.d);
+      auto h02 = Derived::elementwise_max(in1.b, in2.c);
+      auto h03 = Derived::elementwise_max(in1.c, in2.b);
+      auto h04 = Derived::elementwise_max(in1.d, in2.a);
       merge_2x_base_size(l01, l02, l03, l04, out1.a, out1.b, out1.c, out1.d);
       merge_2x_base_size(h01, h02, h03, h04, out2.a, out2.b, out2.c, out2.d);
     }
@@ -114,23 +114,23 @@ class AbstractTwoWayMerge {
       Derived::reverse(in2.g);
       Derived::reverse(in2.h);
 
-      auto l01 = __builtin_elementwise_min(in1.a, in2.h);
-      auto l02 = __builtin_elementwise_min(in1.b, in2.g);
-      auto l03 = __builtin_elementwise_min(in1.c, in2.f);
-      auto l04 = __builtin_elementwise_min(in1.d, in2.e);
-      auto l05 = __builtin_elementwise_min(in1.e, in2.d);
-      auto l06 = __builtin_elementwise_min(in1.f, in2.c);
-      auto l07 = __builtin_elementwise_min(in1.g, in2.b);
-      auto l08 = __builtin_elementwise_min(in1.h, in2.a);
+      auto l01 = Derived::elementwise_min(in1.a, in2.h);
+      auto l02 = Derived::elementwise_min(in1.b, in2.g);
+      auto l03 = Derived::elementwise_min(in1.c, in2.f);
+      auto l04 = Derived::elementwise_min(in1.d, in2.e);
+      auto l05 = Derived::elementwise_min(in1.e, in2.d);
+      auto l06 = Derived::elementwise_min(in1.f, in2.c);
+      auto l07 = Derived::elementwise_min(in1.g, in2.b);
+      auto l08 = Derived::elementwise_min(in1.h, in2.a);
 
-      auto h01 = __builtin_elementwise_max(in1.a, in2.h);
-      auto h02 = __builtin_elementwise_max(in1.b, in2.g);
-      auto h03 = __builtin_elementwise_max(in1.c, in2.f);
-      auto h04 = __builtin_elementwise_max(in1.d, in2.e);
-      auto h05 = __builtin_elementwise_max(in1.e, in2.d);
-      auto h06 = __builtin_elementwise_max(in1.f, in2.c);
-      auto h07 = __builtin_elementwise_max(in1.g, in2.b);
-      auto h08 = __builtin_elementwise_max(in1.h, in2.a);
+      auto h01 = Derived::elementwise_max(in1.a, in2.h);
+      auto h02 = Derived::elementwise_max(in1.b, in2.g);
+      auto h03 = Derived::elementwise_max(in1.c, in2.f);
+      auto h04 = Derived::elementwise_max(in1.d, in2.e);
+      auto h05 = Derived::elementwise_max(in1.e, in2.d);
+      auto h06 = Derived::elementwise_max(in1.f, in2.c);
+      auto h07 = Derived::elementwise_max(in1.g, in2.b);
+      auto h08 = Derived::elementwise_max(in1.h, in2.a);
       merge_4x_base_size(l01, l02, l03, l04, l05, l06, l07, l08, out1.a, out1.b, out1.c, out1.d, out1.e, out1.f, out1.g,
                          out1.h);
 
