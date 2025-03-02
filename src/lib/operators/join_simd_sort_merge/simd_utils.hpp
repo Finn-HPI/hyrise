@@ -38,6 +38,9 @@ template <std::size_t reg_size, typename T>
   requires(reg_size % sizeof(T) == 0)
 using Vec __attribute__((vector_size(reg_size))) = T;
 
+template <class VecType>
+concept IS_DOUBLE_VEC = std::is_same_v<VecType, Vec<sizeof(VecType), double>>;
+
 // Loading and Storing SIMD vectors.
 
 template <typename VecType, typename T>
@@ -275,6 +278,29 @@ struct SortingNetwork {
 
 template <typename VecType>
 static inline void __attribute__((always_inline)) compare_min_max(VecType& input1, VecType& input2) {
+  if constexpr (IS_DOUBLE_VEC<VecType>) {
+    constexpr auto VEC_SIZE = sizeof(VecType);
+    if constexpr (VEC_SIZE == 4 * sizeof(double)) {
+      auto& reg_1 = *std::bit_cast<__m256d*>(&input1);
+      auto& reg_2 = *std::bit_cast<__m256d*>(&input2);
+      auto min = _mm256_min_pd(reg_1, reg_2);
+      auto max = _mm256_max_pd(reg_1, reg_2);
+
+      reg_1 = min;
+      reg_2 = max;
+      return;
+    }
+    if constexpr (VEC_SIZE == 8 * sizeof(double)) {
+      auto& reg_1 = *std::bit_cast<__m512d*>(&input1);
+      auto& reg_2 = *std::bit_cast<__m512d*>(&input2);
+      auto min = _mm512_min_pd(reg_1, reg_2);
+      auto max = _mm512_max_pd(reg_1, reg_2);
+
+      reg_1 = min;
+      reg_2 = max;
+      return;
+    }
+  }
   // NOLINTBEGIN(cppcoreguidelines-pro-type-vararg, hicpp-vararg)
   auto min = __builtin_elementwise_min(input1, input2);
   auto max = __builtin_elementwise_max(input1, input2);
@@ -327,14 +353,15 @@ struct SortingNetwork<4, T> {
     compare_min_max(row_1, row_2);
 
     // Transpose Matrix
-    auto ab_interleaved_lower_halves = __builtin_shufflevector(row_0, row_1, INTERLEAVE_LOWERS);
-    auto ab_interleaved_upper_halves = __builtin_shufflevector(row_0, row_1, INTERLEAVE_UPPERS);
-    auto cd_interleaved_lower_halves = __builtin_shufflevector(row_2, row_3, INTERLEAVE_LOWERS);
-    auto cd_interleaved_upper_halves = __builtin_shufflevector(row_2, row_3, INTERLEAVE_UPPERS);
-    row_0 = __builtin_shufflevector(ab_interleaved_lower_halves, cd_interleaved_lower_halves, LOWER_HALVES);
-    row_1 = __builtin_shufflevector(ab_interleaved_lower_halves, cd_interleaved_lower_halves, UPPER_HALVES);
-    row_2 = __builtin_shufflevector(ab_interleaved_upper_halves, cd_interleaved_upper_halves, LOWER_HALVES);
-    row_3 = __builtin_shufflevector(ab_interleaved_upper_halves, cd_interleaved_upper_halves, UPPER_HALVES);
+    auto stage1_row0 = __builtin_shufflevector(row_0, row_1, 0, 4, 2, 6);
+    auto stage1_row1 = __builtin_shufflevector(row_0, row_1, 1, 5, 3, 7);
+    auto stage1_row2 = __builtin_shufflevector(row_2, row_3, 0, 4, 2, 6);
+    auto stage1_row3 = __builtin_shufflevector(row_2, row_3, 1, 5, 3, 7);
+
+    row_0 = __builtin_shufflevector(stage1_row0, stage1_row2, LOWER_HALVES);
+    row_1 = __builtin_shufflevector(stage1_row1, stage1_row3, LOWER_HALVES);
+    row_2 = __builtin_shufflevector(stage1_row0, stage1_row2, UPPER_HALVES);
+    row_3 = __builtin_shufflevector(stage1_row1, stage1_row3, UPPER_HALVES);
 
     // Write to output
     store_aligned(row_0, output);
