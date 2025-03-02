@@ -203,7 +203,8 @@ void create_relation(Relation* relation, uint64_t num_tuples, uint32_t nthreads,
 
 // NOLINTEND
 
-constexpr auto CLUSTER_COUNT = size_t{128};
+auto CLUSTER_COUNT = size_t{128};
+auto L3_CACHE_SIZE = size_t{20} * 1024 * 1024;
 using ColumnType = uint32_t;
 
 struct RelationPair {
@@ -279,9 +280,9 @@ using namespace hyrise::multiway_merging;
   }
 }
 
-void partition_phase2(std::span<Relation> buckets_r, std::span<Relation> buckets_s, ThreadInfo& thread_info,
-                      size_t num_threads) {
-  const auto nradixbits = static_cast<int>(log2(CLUSTER_COUNT));
+[[maybe_unused]] void partition_phase2(std::span<Relation> buckets_r, std::span<Relation> buckets_s,
+                                       ThreadInfo& thread_info, size_t num_threads) {
+  const auto nradixbits = static_cast<int>(log2(static_cast<double>(CLUSTER_COUNT)));
 
   auto chunk_r = Relation{.tuples = thread_info.rel_r, .num_tuples = thread_info.num_r};
   auto chunk_s = Relation{.tuples = thread_info.rel_s, .num_tuples = thread_info.num_s};
@@ -533,8 +534,9 @@ size_t join_per_hash(std::span<SimdElement> left_elements, std::span<SimdElement
 
   merged_tuples_r.resize(output_size_r);
   merged_tuples_s.resize(output_size_s);
-  auto mway_merge_r = MultiwayMergerBalkesen<choose_count_per_vector(), SortingType>(parts_r);
-  auto mway_merge_s = MultiwayMergerBalkesen<choose_count_per_vector(), SortingType>(parts_s);
+  const auto buffer_size = L3_CACHE_SIZE / thread_count;
+  auto mway_merge_r = MultiwayMergerBalkesen<choose_count_per_vector(), SortingType>(parts_r, buffer_size);
+  auto mway_merge_s = MultiwayMergerBalkesen<choose_count_per_vector(), SortingType>(parts_s, buffer_size);
   mway_merge_r.merge(merged_tuples_r);
   mway_merge_s.merge(merged_tuples_s);
 
@@ -651,10 +653,6 @@ size_t simd_sort_merge_join(Relation* relation_r, Relation* relation_s) {
 
     info.thread_chunks = &thread_chunks;
 
-    // threads.push_back(std::make_shared<JobTask>([&, thread_id]() {
-    //   join_thread(thread_infos[thread_id], sync_point, thread_count);
-    // }));
-
     auto work = [&, thread_id]() {
       join_thread(thread_infos[thread_id], sync_point, thread_count);
     };
@@ -664,8 +662,6 @@ size_t simd_sort_merge_join(Relation* relation_r, Relation* relation_s) {
   for (auto& thread : threads) {
     thread.join();
   }
-
-  // Hyrise::get().scheduler()->schedule_and_wait_for_tasks(threads);
 
   const auto total_results =
       std::accumulate(thread_infos.begin(), thread_infos.end(), size_t{0}, [](size_t sum, auto& info) {
@@ -690,13 +686,15 @@ size_t simd_sort_merge_join(Relation* relation_r, Relation* relation_s) {
 
 }  // namespace
 
-int main() {
-  const auto r_size = 1'600'000'000;
-  const auto s_size = 1'600'000'000;
+int main(int argc [[maybe_unused]], char** argv) {
+  const uint64_t r_size = {1'600'000'000};
+  const uint64_t s_size = uint64_t{1'600'000'000} * atoi(argv[1]);
   // const auto r_size = 16000000;
   // const auto s_size = 16000000;
 
-  const auto num_threads = 128;
+  const size_t num_threads = atoi(argv[2]);
+  CLUSTER_COUNT = num_threads;
+  L3_CACHE_SIZE = atoi(argv[3]);
 
   std::cout << "Create R relation." << '\n';
 
@@ -721,14 +719,9 @@ int main() {
   Hyrise::get().set_scheduler(scheduler);
 
   std::cout << "Run SMJ" << '\n';
-  // auto start = std::chrono::high_resolution_clock::now();
   simd_sort_merge_join(&r_relation, &s_relation);
-  // auto end = std::chrono::high_resolution_clock::now();
-  // auto join_time = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
-  // std::cout << "TOTAL-TIME-USECS: " << join_time << '\n';
 
   Hyrise::get().set_scheduler(std::make_shared<ImmediateExecutionScheduler>());
-  // std::cout << "Results = " << matches << "." << '\n';
 
   return 0;
 }

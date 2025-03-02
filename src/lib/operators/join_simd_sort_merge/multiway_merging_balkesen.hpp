@@ -21,7 +21,7 @@ class MultiwayMergerBalkesen {
  public:
   using value_type = T;
 
-  explicit MultiwayMergerBalkesen(std::span<Relation*> sorted_buckets)
+  explicit MultiwayMergerBalkesen(std::span<Relation*> sorted_buckets, size_t max_buffer_size)
       : _leaf_count(std::bit_ceil(sorted_buckets.size())),
         _sorted_buckets{sorted_buckets},
         _nodes(2 * _leaf_count),
@@ -30,7 +30,7 @@ class MultiwayMergerBalkesen {
                                            [](size_t sum, const auto* bucket) {
                                              return sum + bucket->num_tuples;
                                            })) {
-    _initialize();
+    _initialize(max_buffer_size);
   }
 
   simd_sort::simd_vector<SimdElement> merge() {
@@ -113,7 +113,7 @@ class MultiwayMergerBalkesen {
   }
 
  private:
-  void _initialize() {
+  void _initialize(size_t max_buffer_size) {
     const auto num_buckets = _sorted_buckets.size();
     const auto num_nodes = _nodes.size();
     const auto first_leaf_index = NodeIndex{_leaf_count};
@@ -144,10 +144,15 @@ class MultiwayMergerBalkesen {
     }
 
     // Setup buffers for innner nodes.
-    constexpr auto CACHE_USAGE = 0.9;
-    constexpr auto AVAILABLE_L2_CACHE = static_cast<size_t>(L2_SIZE * CACHE_USAGE);
+    // constexpr auto CACHE_USAGE = 0.9;
+    // constexpr auto AVAILABLE_L2_CACHE = static_cast<size_t>(L2_SIZE * CACHE_USAGE);
+    // _buffer_size = (2 * AVAILABLE_L2_CACHE / sizeof(SimdElement)) / count_non_done_inner_nodes;
+    const auto num_inner_nodes = _leaf_count - 2;
+    _buffer_size = max_buffer_size - _leaf_count -
+                   (num_inner_nodes * sizeof(CircularBuffer) + num_inner_nodes * sizeof(bool) +
+                    _leaf_count * sizeof(Relation) + sizeof(SimdElement) - 1) /
+                       sizeof(SimdElement);
 
-    _buffer_size = (2 * AVAILABLE_L2_CACHE / sizeof(SimdElement)) / count_non_done_inner_nodes;
     _read_threshold = _buffer_size / 2;
 
     _fifo_buffer.resize(count_non_done_inner_nodes * _buffer_size);
