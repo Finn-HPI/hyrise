@@ -64,20 +64,24 @@ class TwoWayMerge<4, T> : public AbstractTwoWayMerge<4, T, TwoWayMerge<4, T>> {
   }
 
   static VecType __attribute__((always_inline)) elementwise_min(VecType& vec_a, VecType& vec_b) {
+#if defined(__AVX2__) || defined(__AVX512F__)
     if constexpr (IS_DOUBLE_VEC<VecType>) {
       auto& reg_a = *std::bit_cast<__m256d*>(&vec_a);
       auto& reg_b = *std::bit_cast<__m256d*>(&vec_b);
       return _mm256_min_pd(reg_a, reg_b);
     }
+#endif
     return __builtin_elementwise_min(vec_a, vec_b);
   }
 
   static VecType __attribute__((always_inline)) elementwise_max(VecType& vec_a, VecType& vec_b) {
+#if defined(__AVX2__) || defined(__AVX512F__)
     if constexpr (IS_DOUBLE_VEC<VecType>) {
       auto& reg_a = *std::bit_cast<__m256d*>(&vec_a);
       auto& reg_b = *std::bit_cast<__m256d*>(&vec_b);
       return _mm256_max_pd(reg_a, reg_b);
     }
+#endif
     return __builtin_elementwise_max(vec_a, vec_b);
   }
 
@@ -116,20 +120,24 @@ class TwoWayMerge<8, T> : public AbstractTwoWayMerge<8, T, TwoWayMerge<8, T>> {
   }
 
   static VecType __attribute__((always_inline)) elementwise_min(VecType& vec_a, VecType& vec_b) {
+#if defined(__AVX2__) || defined(__AVX512F__)
     if constexpr (IS_DOUBLE_VEC<VecType>) {
       auto& reg_a = *std::bit_cast<__m512d*>(&vec_a);
       auto& reg_b = *std::bit_cast<__m512d*>(&vec_b);
       return _mm512_min_pd(reg_a, reg_b);
     }
+#endif
     return __builtin_elementwise_min(vec_a, vec_b);
   }
 
   static VecType __attribute__((always_inline)) elementwise_max(VecType& vec_a, VecType& vec_b) {
+#if defined(__AVX2__) || defined(__AVX512F__)
     if constexpr (IS_DOUBLE_VEC<VecType>) {
       auto& reg_a = *std::bit_cast<__m512d*>(&vec_a);
       auto& reg_b = *std::bit_cast<__m512d*>(&vec_b);
       return _mm512_max_pd(reg_a, reg_b);
     }
+#endif
     return __builtin_elementwise_max(vec_a, vec_b);
   }
 

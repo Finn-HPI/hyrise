@@ -8,6 +8,10 @@
 #include <utility>
 #include <vector>
 
+#if defined(__AVX2__) || defined(__AVX512F__)
+#include <immintrin.h>
+#endif
+
 #include <boost/align/aligned_allocator.hpp>
 
 #ifndef SYSTEM_L2_CACHE_SIZE
@@ -278,6 +282,7 @@ struct SortingNetwork {
 
 template <typename VecType>
 static inline void __attribute__((always_inline)) compare_min_max(VecType& input1, VecType& input2) {
+#if defined(__AVX2__) || defined(__AVX512F__)
   if constexpr (IS_DOUBLE_VEC<VecType>) {
     constexpr auto VEC_SIZE = sizeof(VecType);
     if constexpr (VEC_SIZE == 4 * sizeof(double)) {
@@ -301,6 +306,7 @@ static inline void __attribute__((always_inline)) compare_min_max(VecType& input
       return;
     }
   }
+#endif
   // NOLINTBEGIN(cppcoreguidelines-pro-type-vararg, hicpp-vararg)
   auto min = __builtin_elementwise_min(input1, input2);
   auto max = __builtin_elementwise_max(input1, input2);
