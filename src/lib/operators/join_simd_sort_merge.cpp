@@ -852,10 +852,8 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
     auto [materialized_segments, null_rows, chunk_count, max_chunk_size, min, max] =
         std::move(left_column_materializer.materialize(table, column_id));
 
-    auto chunk_id_bits =
-        chunk_count == 0 ? 0 : static_cast<uint32_t>(std::ceil(std::log2(static_cast<double>(chunk_count))));
-    chunk_offset_bits =
-        max_chunk_size == 0 ? 0 : static_cast<uint32_t>(std::ceil(std::log2(static_cast<double>(max_chunk_size))));
+    auto chunk_id_bits = std::bit_width(chunk_count);
+    chunk_offset_bits = std::bit_width(max_chunk_size);
 
     Assert(chunk_id_bits + chunk_offset_bits <= 32, "RowIDs can't be compressed to 32-bits.");
 
