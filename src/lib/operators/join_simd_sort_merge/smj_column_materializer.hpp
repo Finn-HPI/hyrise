@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "hyrise.hpp"
+#include "operators/join_hash/join_hash_steps.hpp"
 #include "operators/join_simd_sort_merge/util.hpp"
 #include "resolve_type.hpp"
 #include "scheduler/job_task.hpp"
@@ -51,9 +52,16 @@ class SMJColumnMaterializer {
 
   // For sufficiently large chunks (number of rows > JOB_SPAWN_THRESHOLD), the materialization is parallelized. Returns
   // the materialized segments and a list of null row ids if _materialize_null is true.
+  template <bool use_bloom_filter>
   std::tuple<MaterializedSegmentList<T>, RowIDPosList, ChunkID, ChunkOffset, T, T> materialize(
-      const std::shared_ptr<const Table>& input, const ColumnID column_id) {
+      const std::shared_ptr<const Table>& input, const ColumnID column_id, BloomFilter& output_bloom_filter,
+      const BloomFilter& input_bloom_filter = ALL_TRUE_BLOOM_FILTER) {
     const auto chunk_count = input->chunk_count();
+
+    if constexpr (use_bloom_filter) {
+      output_bloom_filter.resize(BLOOM_FILTER_SIZE);
+    }
+    auto output_bloom_filter_mutex = std::mutex{};
 
     auto output = MaterializedSegmentList<T>(chunk_count);
 
@@ -69,8 +77,28 @@ class SMJColumnMaterializer {
       max_chunk_size = std::max(chunk_size, max_chunk_size);
 
       auto materialize_job = [&, chunk_id] {
-        const auto& segment = input->get_chunk(chunk_id)->get_segment(column_id);
-        output[chunk_id] = std::move(_materialize_segment(segment, chunk_id, null_rows_per_chunk[chunk_id]));
+        auto local_output_bloom_filter = BloomFilter{};
+        std::reference_wrapper<BloomFilter> used_output_bloom_filter = output_bloom_filter;
+
+        if constexpr (use_bloom_filter) {
+          if (Hyrise::get().is_multi_threaded()) {
+            local_output_bloom_filter = BloomFilter(BLOOM_FILTER_SIZE, false);
+            used_output_bloom_filter = local_output_bloom_filter;
+          }
+
+          const auto& segment = input->get_chunk(chunk_id)->get_segment(column_id);
+          output[chunk_id] = std::move(_materialize_segment_with_bloom_filter(
+              segment, chunk_id, null_rows_per_chunk[chunk_id], used_output_bloom_filter, input_bloom_filter));
+
+          if (Hyrise::get().is_multi_threaded()) {
+            const auto lock = std::lock_guard<std::mutex>{output_bloom_filter_mutex};
+            output_bloom_filter |= local_output_bloom_filter;
+          }
+
+        } else {
+          const auto& segment = input->get_chunk(chunk_id)->get_segment(column_id);
+          output[chunk_id] = std::move(_materialize_segment(segment, chunk_id, null_rows_per_chunk[chunk_id]));
+        }
       };
 
       if (chunk_size > _job_spawn_threshold) {
@@ -98,6 +126,32 @@ class SMJColumnMaterializer {
   }
 
  private:
+  MaterializedSegment<T> _materialize_segment_with_bloom_filter(
+      const std::shared_ptr<AbstractSegment>& segment, const ChunkID chunk_id, RowIDPosList& null_rows_output,
+      std::reference_wrapper<BloomFilter> used_output_bloom_filter, const BloomFilter& input_bloom_filter) {
+    const std::hash<T> hash_function;
+    auto output = MaterializedSegment<T>{};
+    output.reserve(segment->size());
+
+    segment_iterate<T>(*segment, [&](const auto& position) {
+      if (position.is_null()) {
+        if (_materialize_null) {
+          null_rows_output.emplace_back(chunk_id, position.chunk_offset());
+        }
+      } else {
+        auto& value = position.value();
+        const Hash hashed_value = hash_function(static_cast<T>(value));
+
+        if (input_bloom_filter[hashed_value & BLOOM_FILTER_MASK]) {
+          used_output_bloom_filter.get()[hashed_value & BLOOM_FILTER_MASK] = true;
+          output.emplace_back(chunk_id, position.chunk_offset(), value);
+        }
+      }
+    });
+
+    return output;
+  }
+
   MaterializedSegment<T> _materialize_segment(const std::shared_ptr<AbstractSegment>& segment, const ChunkID chunk_id,
                                               RowIDPosList& null_rows_output) {
     auto output = MaterializedSegment<T>{};
@@ -128,8 +182,10 @@ class SMJColumnMaterializer<int64_t> {
 
   // For sufficiently large chunks (number of rows > JOB_SPAWN_THRESHOLD), the materialization is parallelized. Returns
   // the materialized segments and a list of null row ids if _materialize_null is true.
+  template <bool use_bloom_filter>
   std::tuple<MaterializedSegmentList<int64_t>, RowIDPosList, ChunkID, ChunkOffset, int64_t, int64_t> materialize(
-      const std::shared_ptr<const Table>& input, const ColumnID column_id) {
+      const std::shared_ptr<const Table>& input, const ColumnID column_id, BloomFilter& output_bloom_filter,
+      const BloomFilter& input_bloom_filter = ALL_TRUE_BLOOM_FILTER) {
     const auto chunk_count = input->chunk_count();
 
     auto output = MaterializedSegmentList<int64_t>(chunk_count);
@@ -148,8 +204,8 @@ class SMJColumnMaterializer<int64_t> {
 
       auto materialize_job = [&, chunk_id] {
         const auto& segment = input->get_chunk(chunk_id)->get_segment(column_id);
-        std::tie(output[chunk_id], min_max_values[chunk_id]) =
-            _materialize_segment(segment, chunk_id, null_rows_per_chunk[chunk_id]);
+        std::tie(output[chunk_id], min_max_values[chunk_id]) = _materialize_segment(
+            segment, chunk_id, null_rows_per_chunk[chunk_id], output_bloom_filter, input_bloom_filter);
       };
 
       if (chunk_size > _job_spawn_threshold) {
@@ -186,7 +242,9 @@ class SMJColumnMaterializer<int64_t> {
 
  private:
   std::pair<MaterializedSegment<int64_t>, std::pair<int64_t, int64_t>> _materialize_segment(
-      const std::shared_ptr<AbstractSegment>& segment, const ChunkID chunk_id, RowIDPosList& null_rows_output) {
+      const std::shared_ptr<AbstractSegment>& segment, const ChunkID chunk_id, RowIDPosList& null_rows_output,
+      [[maybe_unused]] std::reference_wrapper<BloomFilter> used_output_bloom_filter,
+      [[maybe_unused]] const BloomFilter& input_bloom_filter) {
     auto output = MaterializedSegment<int64_t>{};
     output.reserve(segment->size());
 

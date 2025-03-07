@@ -4,6 +4,7 @@
 #include <boost/functional/hash.hpp>
 #include <boost/unordered/unordered_flat_set.hpp>
 
+#include "operators/join_hash/join_hash_steps.hpp"
 #include "operators/join_helper/join_output_writing.hpp"
 #include "operators/join_simd_sort_merge/k_way_merge.hpp"
 #include "operators/join_simd_sort_merge/multiway_merging.hpp"
@@ -20,6 +21,7 @@
 #endif
 
 #include <algorithm>
+#include <bit>
 #include <fstream>
 #include <iterator>
 #include <limits>
@@ -846,22 +848,38 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
   template <typename T, JoinSimdSortMerge::OperatorSteps materialize_step>
   std::pair<T, T> _materialize_column(const std::shared_ptr<const Table> table, const ColumnID column_id,
                                       MaterializedSegmentList<T>& materialized_segment_list, RowIDPosList& null_values,
-                                      const bool materialize_null, uint32_t& chunk_offset_bits) {
+                                      const bool materialize_null, uint32_t& chunk_offset_bits,
+                                      BloomFilter& output_bloom_filter, bool use_bloom_filter = false,
+                                      const BloomFilter& input_bloom_filter = ALL_TRUE_BLOOM_FILTER) {
     auto timer = Timer{};
     auto left_column_materializer = SMJColumnMaterializer<T>(materialize_null);
+
+    auto save_materialized_output = [&](MaterializedSegmentList<T>& materialized_segments, RowIDPosList& null_rows,
+                                        ChunkID& chunk_count, ChunkOffset& max_chunk_size, T& min,
+                                        T& max) -> std::pair<T, T> {
+      auto chunk_id_bits = std::bit_width<uint32_t>(chunk_count);
+      chunk_offset_bits = std::bit_width<uint32_t>(max_chunk_size);
+
+      Assert(chunk_id_bits + chunk_offset_bits <= 32, "RowIDs can't be compressed to 32-bits.");
+
+      null_values = std::move(null_rows);
+      materialized_segment_list = std::move(materialized_segments);
+      _performance.set_step_runtime(materialize_step, timer.lap());
+
+      return {min, max};
+    };
+
+    if (use_bloom_filter) {
+      auto [materialized_segments, null_rows, chunk_count, max_chunk_size, min, max] =
+          std::move(left_column_materializer.template materialize<true>(table, column_id, output_bloom_filter,
+                                                                        input_bloom_filter));
+      return save_materialized_output(materialized_segments, null_rows, chunk_count, max_chunk_size, min, max);
+    }
+
     auto [materialized_segments, null_rows, chunk_count, max_chunk_size, min, max] =
-        std::move(left_column_materializer.materialize(table, column_id));
-
-    auto chunk_id_bits = std::bit_width(chunk_count);
-    chunk_offset_bits = std::bit_width(max_chunk_size);
-
-    Assert(chunk_id_bits + chunk_offset_bits <= 32, "RowIDs can't be compressed to 32-bits.");
-
-    null_values = std::move(null_rows);
-    materialized_segment_list = std::move(materialized_segments);
-    _performance.set_step_runtime(materialize_step, timer.lap());
-
-    return {min, max};
+        std::move(left_column_materializer.template materialize<false>(table, column_id, output_bloom_filter,
+                                                                       input_bloom_filter));
+    return save_materialized_output(materialized_segments, null_rows, chunk_count, max_chunk_size, min, max);
   }
 
   MaterializedSegment<ColumnType> _flatten(MaterializedSegmentList<ColumnType>& materialized_segments) {
@@ -943,13 +961,51 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
     auto materialized_segments_left = MaterializedSegmentList<ColumnType>{};
     auto materialized_segments_right = MaterializedSegmentList<ColumnType>{};
 
-    const auto [min_left, max_left] = _materialize_column<ColumnType, LeftSideMaterialize>(
-        _left_input_table, _primary_left_column_id, materialized_segments_left, _null_rows_left, include_null_left,
-        _chunk_offset_bits_left);
+    auto build_side_bloom_filter = BloomFilter{};
+    auto probe_side_bloom_filter = BloomFilter{};
 
-    const auto [min_right, max_right] = _materialize_column<ColumnType, RightSideMaterialize>(
-        _right_input_table, _primary_right_column_id, materialized_segments_right, _null_rows_right, include_null_right,
-        _chunk_offset_bits_right);
+    auto min_left = ColumnType{};
+    auto min_right = ColumnType{};
+    auto max_left = ColumnType{};
+    auto max_right = ColumnType{};
+
+    switch (_mode) {
+      case JoinMode::Inner:
+        if (_right_input_table->row_count() < _left_input_table->row_count()) {
+          std::tie(min_right, max_right) = _materialize_column<ColumnType, RightSideMaterialize>(
+              _right_input_table, _primary_right_column_id, materialized_segments_right, _null_rows_right,
+              include_null_right, _chunk_offset_bits_right, build_side_bloom_filter, true);
+          std::tie(min_left, min_left) = _materialize_column<ColumnType, LeftSideMaterialize>(
+              _left_input_table, _primary_left_column_id, materialized_segments_left, _null_rows_left,
+              include_null_left, _chunk_offset_bits_left, probe_side_bloom_filter, true, build_side_bloom_filter);
+          break;
+        }
+        [[fallthrough]];
+      case JoinMode::Left:
+        std::tie(min_left, min_left) = _materialize_column<ColumnType, LeftSideMaterialize>(
+            _left_input_table, _primary_left_column_id, materialized_segments_left, _null_rows_left, include_null_left,
+            _chunk_offset_bits_left, build_side_bloom_filter, true);
+        std::tie(min_right, max_right) = _materialize_column<ColumnType, RightSideMaterialize>(
+            _right_input_table, _primary_right_column_id, materialized_segments_right, _null_rows_right,
+            include_null_right, _chunk_offset_bits_right, probe_side_bloom_filter, true, build_side_bloom_filter);
+        break;
+      case JoinMode::Right:
+        std::tie(min_right, max_right) = _materialize_column<ColumnType, RightSideMaterialize>(
+            _right_input_table, _primary_right_column_id, materialized_segments_right, _null_rows_right,
+            include_null_right, _chunk_offset_bits_right, build_side_bloom_filter, true);
+        std::tie(min_left, min_left) = _materialize_column<ColumnType, LeftSideMaterialize>(
+            _left_input_table, _primary_left_column_id, materialized_segments_left, _null_rows_left, include_null_left,
+            _chunk_offset_bits_left, probe_side_bloom_filter, true, build_side_bloom_filter);
+
+        break;
+      default:
+        std::tie(min_left, min_left) = _materialize_column<ColumnType, LeftSideMaterialize>(
+            _left_input_table, _primary_left_column_id, materialized_segments_left, _null_rows_left, include_null_left,
+            _chunk_offset_bits_left, build_side_bloom_filter, false);
+        std::tie(min_right, max_right) = _materialize_column<ColumnType, RightSideMaterialize>(
+            _right_input_table, _primary_right_column_id, materialized_segments_right, _null_rows_right,
+            include_null_right, _chunk_offset_bits_right, probe_side_bloom_filter, false);
+    }
 
     _min_value = std::min(min_left, min_right);
     _max_value = std::max(max_left, max_right);
