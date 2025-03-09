@@ -147,11 +147,13 @@ class MultiwayMergerBalkesen {
     // constexpr auto CACHE_USAGE = 0.9;
     // constexpr auto AVAILABLE_L2_CACHE = static_cast<size_t>(L2_SIZE * CACHE_USAGE);
     // _buffer_size = (2 * AVAILABLE_L2_CACHE / sizeof(SimdElement)) / count_non_done_inner_nodes;
-    const auto num_inner_nodes = _leaf_count - 2;
-    _buffer_size = max_buffer_size - _leaf_count -
-                   (num_inner_nodes * sizeof(CircularBuffer) + num_inner_nodes * sizeof(bool) +
-                    _leaf_count * sizeof(Relation) + sizeof(SimdElement) - 1) /
-                       sizeof(SimdElement);
+    auto total_fifo_size =
+        ((max_buffer_size) / sizeof(SimdElement)) - _leaf_count -
+        ((count_non_done_inner_nodes * sizeof(CircularBuffer) + count_non_done_inner_nodes * sizeof(bool) +
+          _leaf_count * sizeof(Relation) + sizeof(SimdElement) - 1) /
+         sizeof(SimdElement));
+
+    _buffer_size = total_fifo_size / count_non_done_inner_nodes;
 
     _read_threshold = _buffer_size / 2;
 
