@@ -57,6 +57,7 @@ class SMJColumnMaterializer {
       const std::shared_ptr<const Table>& input, const ColumnID column_id, BloomFilter& output_bloom_filter,
       const BloomFilter& input_bloom_filter = ALL_TRUE_BLOOM_FILTER) {
     const auto chunk_count = input->chunk_count();
+    const std::hash<T> hash_function;
 
     if constexpr (use_bloom_filter) {
       output_bloom_filter.resize(BLOOM_FILTER_SIZE);
@@ -72,13 +73,22 @@ class SMJColumnMaterializer {
     auto jobs = std::vector<std::shared_ptr<AbstractTask>>{};
     for (auto chunk_id = ChunkID{0}; chunk_id < chunk_count; ++chunk_id) {
       const auto& chunk = input->get_chunk(chunk_id);
+      if (!chunk) {
+        continue;
+      }
+
       Assert(chunk, "Physically deleted chunk should not reach this point, see get_chunk / #1686.");
       const auto chunk_size = chunk->size();
       max_chunk_size = std::max(chunk_size, max_chunk_size);
 
-      auto materialize_job = [&, chunk_id] {
+      auto materialize_job = [&, chunk, chunk_id] {
         auto local_output_bloom_filter = BloomFilter{};
         std::reference_wrapper<BloomFilter> used_output_bloom_filter = output_bloom_filter;
+
+        // Skip chunks that were physically deleted.
+        if (!chunk) {
+          return;
+        }
 
         if constexpr (use_bloom_filter) {
           if (Hyrise::get().is_multi_threaded()) {
@@ -87,8 +97,15 @@ class SMJColumnMaterializer {
           }
 
           const auto& segment = input->get_chunk(chunk_id)->get_segment(column_id);
-          output[chunk_id] = std::move(_materialize_segment_with_bloom_filter(
-              segment, chunk_id, null_rows_per_chunk[chunk_id], used_output_bloom_filter, input_bloom_filter));
+          if (_materialize_null) {
+            output[chunk_id] = std::move(_materialize_segment_with_bloom_filter<true>(
+                segment, chunk_id, null_rows_per_chunk[chunk_id], used_output_bloom_filter, input_bloom_filter,
+                hash_function, chunk->size()));
+          } else {
+            output[chunk_id] = std::move(_materialize_segment_with_bloom_filter<false>(
+                segment, chunk_id, null_rows_per_chunk[chunk_id], used_output_bloom_filter, input_bloom_filter,
+                hash_function, chunk->size()));
+          }
 
           if (Hyrise::get().is_multi_threaded()) {
             const auto lock = std::lock_guard<std::mutex>{output_bloom_filter_mutex};
@@ -97,7 +114,12 @@ class SMJColumnMaterializer {
 
         } else {
           const auto& segment = input->get_chunk(chunk_id)->get_segment(column_id);
-          output[chunk_id] = std::move(_materialize_segment(segment, chunk_id, null_rows_per_chunk[chunk_id]));
+          if (_materialize_null) {
+            output[chunk_id] = std::move(_materialize_segment<true>(segment, chunk_id, null_rows_per_chunk[chunk_id]));
+
+          } else {
+            output[chunk_id] = std::move(_materialize_segment<false>(segment, chunk_id, null_rows_per_chunk[chunk_id]));
+          }
         }
       };
 
@@ -126,32 +148,84 @@ class SMJColumnMaterializer {
   }
 
  private:
+  template <bool keep_null>
   MaterializedSegment<T> _materialize_segment_with_bloom_filter(
-      const std::shared_ptr<AbstractSegment>& segment, const ChunkID chunk_id, RowIDPosList& null_rows_output,
-      std::reference_wrapper<BloomFilter> used_output_bloom_filter, const BloomFilter& input_bloom_filter) {
-    const std::hash<T> hash_function;
-    auto output = MaterializedSegment<T>{};
-    output.reserve(segment->size());
+      const std::shared_ptr<AbstractSegment>& segment, const ChunkID chunk_id,
+      [[maybe_unused]] RowIDPosList& null_rows_output, std::reference_wrapper<BloomFilter>& used_output_bloom_filter,
+      const BloomFilter& input_bloom_filter, const std::hash<T>& hash_function, ChunkOffset num_rows) {
+    auto elements = MaterializedSegment<T>{};
+    elements.resize(num_rows);
+    if constexpr (keep_null) {
+      null_rows_output.resize(num_rows);
+    }
 
-    segment_iterate<T>(*segment, [&](const auto& position) {
-      if (position.is_null()) {
-        if (_materialize_null) {
-          null_rows_output.emplace_back(chunk_id, position.chunk_offset());
-        }
+    auto elements_iter = elements.begin();
+    [[maybe_unused]] auto null_values_iter = null_rows_output.begin();
+
+    auto reference_chunk_offset = ChunkOffset{0};
+
+    segment_with_iterators<T>(*segment, [&](auto iter, auto end) {
+      using IterableType = typename decltype(iter)::IterableType;
+
+      if (dynamic_cast<ValueSegment<T>*>(&*segment)) {
+        // The last chunk might have changed its size since we allocated elements. This would be due to concurrent
+        // inserts into that chunk. In any case, those inserts will not be visible to our current transaction, so we
+        // can ignore them.
+        const auto inserted_rows = (end - iter) - num_rows;
+        end -= inserted_rows;
       } else {
-        auto& value = position.value();
-        const Hash hashed_value = hash_function(static_cast<T>(value));
+        Assert(end - iter == num_rows, "Non-ValueSegment changed size while being accessed.");
+      }
 
-        if (input_bloom_filter[hashed_value & BLOOM_FILTER_MASK]) {
-          used_output_bloom_filter.get()[hashed_value & BLOOM_FILTER_MASK] = true;
-          output.emplace_back(chunk_id, position.chunk_offset(), value);
+      while (iter != end) {
+        const auto& value = *iter;
+        if constexpr (keep_null) {
+          if (value.is_null()) {
+            if constexpr (is_reference_segment_iterable_v<IterableType>) {
+              *null_values_iter = RowID{chunk_id, reference_chunk_offset};
+            } else {
+              *null_values_iter = RowID{chunk_id, value.chunk_offset()};
+            }
+            ++null_values_iter;
+          }
         }
+
+        if (!value.is_null()) {
+          const Hash hashed_value = hash_function(static_cast<T>(value.value()));
+          if (input_bloom_filter[hashed_value & BLOOM_FILTER_MASK]) {
+            // Fill the corresponding slot in the bloom filter
+            used_output_bloom_filter.get()[hashed_value & BLOOM_FILTER_MASK] = true;
+
+            /*
+              For ReferenceSegments we do not use the RowIDs from the referenced tables.
+              Instead, we use the index in the ReferenceSegment itself. This way we can later correctly dereference
+              values from different inputs (important for Multi Joins).
+              */
+            if constexpr (is_reference_segment_iterable_v<IterableType>) {
+              *elements_iter = std::move(MaterializedValue<T>(chunk_id, reference_chunk_offset, value.value()));
+            } else {
+              *elements_iter = std::move(MaterializedValue<T>(chunk_id, value.chunk_offset(), value.value()));
+              // *elements_iter = std::move(MaterializedValue<T>{RowID{chunk_id, value.chunk_offset()}, value.value()});
+            }
+            ++elements_iter;
+          }
+        }
+
+        // reference_chunk_offset is only used for ReferenceSegments
+        if constexpr (is_reference_segment_iterable_v<IterableType>) {
+          ++reference_chunk_offset;
+        }
+        ++iter;
       }
     });
 
-    return output;
+    elements.resize(std::distance(elements.begin(), elements_iter));
+    null_rows_output.resize(std::distance(null_rows_output.begin(), null_values_iter));
+
+    return elements;
   }
 
+  template <bool keep_null>
   MaterializedSegment<T> _materialize_segment(const std::shared_ptr<AbstractSegment>& segment, const ChunkID chunk_id,
                                               RowIDPosList& null_rows_output) {
     auto output = MaterializedSegment<T>{};
@@ -159,7 +233,7 @@ class SMJColumnMaterializer {
 
     segment_iterate<T>(*segment, [&](const auto& position) {
       if (position.is_null()) {
-        if (_materialize_null) {
+        if constexpr (keep_null) {
           null_rows_output.emplace_back(chunk_id, position.chunk_offset());
         }
       } else {
