@@ -2,6 +2,7 @@
 
 #include <array>
 #include <memory>
+#include <span>
 #include <vector>
 
 #include "hyrise.hpp"
