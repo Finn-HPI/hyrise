@@ -68,24 +68,12 @@ std::pair<SQLPipelineStatus, std::shared_ptr<const Table>> BenchmarkSQLExecutor:
             return;
           }
 
-          if (op->name() == "JoinSimdSortMerge") {
-            const auto ssmj = std::dynamic_pointer_cast<const JoinSimdSortMerge>(op);
-            const auto& performance_data = *ssmj->performance_data;
+          if (op->name() == "JoinSimdSortMerge" || op->name() == "JoinHash") {
+            const auto& performance_data = *op->performance_data;
             if (op->executed()) {
               auto total = performance_data.walltime;
-              file << total << ",";
-
-              auto operator_performance_data_stream = std::stringstream{};
-              performance_data.output_to_stream(operator_performance_data_stream, DescriptionMode::SingleLine);
-              const auto performance_string = operator_performance_data_stream.str();
-              file << performance_string << '\n';
-            }
-          } else if (op->name() == "JoinHash") {
-            const auto ssmj = std::dynamic_pointer_cast<const JoinHash>(op);
-            const auto& performance_data = *ssmj->performance_data;
-            if (op->executed()) {
-              auto total = performance_data.walltime;
-              file << total << ",";
+              file << total << '|';
+              file << op->description(DescriptionMode::SingleLine) << '|';
 
               auto operator_performance_data_stream = std::stringstream{};
               performance_data.output_to_stream(operator_performance_data_stream, DescriptionMode::SingleLine);

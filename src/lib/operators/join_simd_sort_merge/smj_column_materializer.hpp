@@ -21,14 +21,8 @@
 namespace hyrise {
 
 template <typename T>
+// NOLINTNEXTLINE
 struct MaterializedValue {
-  MaterializedValue() = default;
-
-  MaterializedValue(RowID row, T init_value) : row_id{row}, value{init_value} {}
-
-  MaterializedValue(ChunkID chunk_id, ChunkOffset chunk_offset, T init_value)
-      : row_id{chunk_id, chunk_offset}, value{init_value} {}
-
   union {
     RowID row_id;
     SimdElement element{};
@@ -38,7 +32,9 @@ struct MaterializedValue {
 };
 
 template <typename T>
-using MaterializedSegment = std::vector<MaterializedValue<T>>;
+using MaterializedSegment =
+    std::conditional_t<std::is_trivially_destructible_v<T>, uninitialized_vector<MaterializedValue<T>>,
+                       std::vector<MaterializedValue<T>>>;
 
 template <typename T>
 using MaterializedSegmentList = std::vector<MaterializedSegment<T>>;
@@ -155,81 +151,7 @@ class SMJColumnMaterializer {
       const BloomFilter& input_bloom_filter, const std::hash<T>& hash_function, ChunkOffset num_rows) {
     auto elements = MaterializedSegment<T>{};
     elements.resize(num_rows);
-    if constexpr (keep_null) {
-      null_rows_output.resize(num_rows);
-    }
-
     auto elements_iter = elements.begin();
-    [[maybe_unused]] auto null_values_iter = null_rows_output.begin();
-
-    auto reference_chunk_offset = ChunkOffset{0};
-
-    segment_with_iterators<T>(*segment, [&](auto iter, auto end) {
-      using IterableType = typename decltype(iter)::IterableType;
-
-      if (dynamic_cast<ValueSegment<T>*>(&*segment)) {
-        // The last chunk might have changed its size since we allocated elements. This would be due to concurrent
-        // inserts into that chunk. In any case, those inserts will not be visible to our current transaction, so we
-        // can ignore them.
-        const auto inserted_rows = (end - iter) - num_rows;
-        end -= inserted_rows;
-      } else {
-        Assert(end - iter == num_rows, "Non-ValueSegment changed size while being accessed.");
-      }
-
-      while (iter != end) {
-        const auto& value = *iter;
-        if constexpr (keep_null) {
-          if (value.is_null()) {
-            if constexpr (is_reference_segment_iterable_v<IterableType>) {
-              *null_values_iter = RowID{chunk_id, reference_chunk_offset};
-            } else {
-              *null_values_iter = RowID{chunk_id, value.chunk_offset()};
-            }
-            ++null_values_iter;
-          }
-        }
-
-        if (!value.is_null()) {
-          const Hash hashed_value = hash_function(static_cast<T>(value.value()));
-          if (input_bloom_filter[hashed_value & BLOOM_FILTER_MASK]) {
-            // Fill the corresponding slot in the bloom filter
-            used_output_bloom_filter.get()[hashed_value & BLOOM_FILTER_MASK] = true;
-
-            /*
-              For ReferenceSegments we do not use the RowIDs from the referenced tables.
-              Instead, we use the index in the ReferenceSegment itself. This way we can later correctly dereference
-              values from different inputs (important for Multi Joins).
-              */
-            if constexpr (is_reference_segment_iterable_v<IterableType>) {
-              *elements_iter = std::move(MaterializedValue<T>(chunk_id, reference_chunk_offset, value.value()));
-            } else {
-              *elements_iter = std::move(MaterializedValue<T>(chunk_id, value.chunk_offset(), value.value()));
-              // *elements_iter = std::move(MaterializedValue<T>{RowID{chunk_id, value.chunk_offset()}, value.value()});
-            }
-            ++elements_iter;
-          }
-        }
-
-        // reference_chunk_offset is only used for ReferenceSegments
-        if constexpr (is_reference_segment_iterable_v<IterableType>) {
-          ++reference_chunk_offset;
-        }
-        ++iter;
-      }
-    });
-
-    elements.resize(std::distance(elements.begin(), elements_iter));
-    null_rows_output.resize(std::distance(null_rows_output.begin(), null_values_iter));
-
-    return elements;
-  }
-
-  template <bool keep_null>
-  MaterializedSegment<T> _materialize_segment(const std::shared_ptr<AbstractSegment>& segment, const ChunkID chunk_id,
-                                              RowIDPosList& null_rows_output) {
-    auto output = MaterializedSegment<T>{};
-    output.reserve(segment->size());
 
     segment_iterate<T>(*segment, [&](const auto& position) {
       if (position.is_null()) {
@@ -237,10 +159,44 @@ class SMJColumnMaterializer {
           null_rows_output.emplace_back(chunk_id, position.chunk_offset());
         }
       } else {
-        output.emplace_back(chunk_id, position.chunk_offset(), position.value());
+        auto& value = position.value();
+        const Hash hashed_value = hash_function(static_cast<T>(value));
+
+        if (input_bloom_filter[hashed_value & BLOOM_FILTER_MASK]) {
+          used_output_bloom_filter.get()[hashed_value & BLOOM_FILTER_MASK] = true;
+          //output.emplace_back(chunk_id, position.chunk_offset(), value);
+          *elements_iter = MaterializedValue<T>{{RowID(chunk_id, position.chunk_offset())}, value};
+          ++elements_iter;
+        }
       }
     });
 
+    elements.resize(std::distance(elements.begin(), elements_iter));
+    return elements;
+  }
+
+  template <bool keep_null>
+  MaterializedSegment<T> _materialize_segment(const std::shared_ptr<AbstractSegment>& segment, const ChunkID chunk_id,
+                                              RowIDPosList& null_rows_output) {
+    const auto num_rows = segment->size();
+
+    auto output = MaterializedSegment<T>{};
+    output.resize(num_rows);
+
+    auto elements_iter = output.begin();
+
+    segment_iterate<T>(*segment, [&](const auto& position) {
+      if (position.is_null()) {
+        if constexpr (keep_null) {
+          null_rows_output.emplace_back(chunk_id, position.chunk_offset());
+        }
+      } else {
+        *elements_iter = MaterializedValue<T>{{RowID(chunk_id, position.chunk_offset())}, position.value()};
+        ++elements_iter;
+      }
+    });
+
+    output.resize(std::distance(output.begin(), elements_iter));
     return output;
   }
 
@@ -319,8 +275,12 @@ class SMJColumnMaterializer<int64_t> {
       const std::shared_ptr<AbstractSegment>& segment, const ChunkID chunk_id, RowIDPosList& null_rows_output,
       [[maybe_unused]] std::reference_wrapper<BloomFilter> used_output_bloom_filter,
       [[maybe_unused]] const BloomFilter& input_bloom_filter) {
+    const auto num_rows = segment->size();
+
     auto output = MaterializedSegment<int64_t>{};
-    output.reserve(segment->size());
+    output.resize(num_rows);
+
+    auto elements_iter = output.begin();
 
     auto min = std::numeric_limits<int64_t>::max();
     auto max = std::numeric_limits<int64_t>::lowest();
@@ -332,12 +292,15 @@ class SMJColumnMaterializer<int64_t> {
         }
       } else {
         auto& value = position.value();
-        output.emplace_back(chunk_id, position.chunk_offset(), value);
+
+        *elements_iter = MaterializedValue<int64_t>{{RowID(chunk_id, position.chunk_offset())}, value};
+        ++elements_iter;
         min = value < min ? value : min;
         max = value > max ? value : max;
       }
     });
 
+    output.resize(std::distance(output.begin(), elements_iter));
     return {output, {min, max}};
   }
 
