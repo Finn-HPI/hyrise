@@ -1,6 +1,7 @@
 #include "benchmark_sql_executor.hpp"
 
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <memory>
 #include <optional>
@@ -8,6 +9,8 @@
 #include <utility>
 
 #include "concurrency/transaction_context.hpp"
+#include "operators/join_hash.hpp"
+#include "operators/join_simd_sort_merge.hpp"
 #include "sql/sql_pipeline.hpp"
 #include "sql/sql_pipeline_builder.hpp"
 #include "sql/sql_pipeline_statement.hpp"
@@ -55,6 +58,63 @@ std::pair<SQLPipelineStatus, std::shared_ptr<const Table>> BenchmarkSQLExecutor:
     _compare_tables(result_table, expected_result_table, "Using dedicated expected result table.");
   } else if (_sqlite_connection) {
     _verify_with_sqlite(pipeline);
+  }
+
+  if (!Hyrise::get().warm_up && _visualize_prefix) {
+    auto visualized_ops = std::unordered_set<std::shared_ptr<const AbstractOperator>>{};
+    std::function<void(const std::shared_ptr<const AbstractOperator>&, std::ofstream&)> traverse_pqp =
+        [&](const std::shared_ptr<const AbstractOperator>& op, std::ofstream& file) {
+          if (visualized_ops.find(op) != visualized_ops.end()) {
+            return;
+          }
+
+          if (op->name() == "JoinSimdSortMerge") {
+            const auto ssmj = std::dynamic_pointer_cast<const JoinSimdSortMerge>(op);
+            const auto& performance_data = *ssmj->performance_data;
+            if (op->executed()) {
+              auto total = performance_data.walltime;
+              file << total << ",";
+
+              auto operator_performance_data_stream = std::stringstream{};
+              performance_data.output_to_stream(operator_performance_data_stream, DescriptionMode::SingleLine);
+              const auto performance_string = operator_performance_data_stream.str();
+              file << performance_string << '\n';
+            }
+          } else if (op->name() == "JoinHash") {
+            const auto ssmj = std::dynamic_pointer_cast<const JoinHash>(op);
+            const auto& performance_data = *ssmj->performance_data;
+            if (op->executed()) {
+              auto total = performance_data.walltime;
+              file << total << ",";
+
+              auto operator_performance_data_stream = std::stringstream{};
+              performance_data.output_to_stream(operator_performance_data_stream, DescriptionMode::SingleLine);
+              const auto performance_string = operator_performance_data_stream.str();
+              file << performance_string << '\n';
+            }
+          }
+
+          visualized_ops.insert(op);
+          if (op->left_input()) {
+            auto left = op->left_input();
+            traverse_pqp(left, file);
+          }
+
+          if (op->right_input()) {
+            auto right = op->right_input();
+            traverse_pqp(right, file);
+          }
+        };
+
+    const auto& pqps = pipeline.get_physical_plans();
+    auto now = std::chrono::steady_clock::now();
+    auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+    auto file_name = _visualize_prefix.value() + "-" + std::to_string(millis) + "-PQP.txt";
+    std::ofstream file(file_name);
+    for (const auto& op : pqps) {
+      traverse_pqp(op, file);
+    }
+    file.close();
   }
 
   if (_visualize_prefix) {

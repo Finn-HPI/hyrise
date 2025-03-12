@@ -310,7 +310,9 @@ void BenchmarkRunner::_benchmark_ordered() {
   _running_clients_semaphore.signal(_config.clients);
 
   for (const auto& item_id : _benchmark_item_runner->items()) {
+    Hyrise::get().warm_up = true;
     _warmup(item_id);
+    Hyrise::get().warm_up = false;
 
     const auto& name = _benchmark_item_runner->item_name(item_id);
     std::cout << "- Benchmarking " << name << '\n' << std::flush;

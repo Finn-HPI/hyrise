@@ -4,6 +4,7 @@
 #include <cstdio>  /* FILE, fopen */
 #include <cstdlib> /* exit, perror */
 
+#define HAVE_NUMA = 1
 #ifdef HAVE_NUMA
 #include <numa.h> /* for automatic NUMA-mappings */
 #endif
@@ -97,7 +98,6 @@ static void numa_default_init() {
 }
 
 static void numa_init() {
-#ifdef HAVE_NUMA
   int i, k, ncpus, j;
   struct bitmask* cpus;
 
@@ -142,11 +142,6 @@ static void numa_init() {
   numthreads = thrpernuma * numnodes;
 
   numa_free_cpumask(cpus);
-
-#else
-  fprintf(stdout, "[WARN ] NUMA is not available, using single NUMA-region as default.\n");
-  numa_default_init();
-#endif
 }
 
 void cpu_mapping_cleanup() {

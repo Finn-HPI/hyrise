@@ -55,6 +55,7 @@ class Hyrise : public Singleton<Hyrise> {
   // The BenchmarkRunner is available here so that non-benchmark components can add information to the benchmark
   // result JSON.
   std::weak_ptr<BenchmarkRunner> benchmark_runner;
+  bool warm_up;
 
  private:
   Hyrise();
