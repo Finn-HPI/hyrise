@@ -231,9 +231,6 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
   ColumnType _min_value;
   ColumnType _max_value;
 
-  SimdElementList _simd_elements_left;
-  SimdElementList _simd_elements_right;
-
   std::vector<SimdElementList> _sorted_per_hash_left;
   std::vector<SimdElementList> _sorted_per_hash_right;
 
@@ -883,7 +880,7 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
       const auto count_per_vector = choose_count_per_vector();
       auto* input_pointer = bucket.template begin<SortingType>();
       auto* output_pointer =
-          radix_partition.template get_working_memory<SortingType>(bucket_index, chunk_working_memory);
+          radix_partition.template get_working_memory<SortingType>(bucket_index, chunk_working_memory.data());
 
       DebugAssert((simd_sort::is_simd_aligned<SortingType, 64>(input_pointer)), "Input not cache aligned.");
       DebugAssert((simd_sort::is_simd_aligned<SortingType, 64>(output_pointer)), "Output not cache aligned.");

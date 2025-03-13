@@ -74,7 +74,8 @@ class MultiwayMerger {
     return merged_output;
   }
 
-  void merge(simd_sort::simd_vector<SimdElement>& merged_output) {
+  template <typename SimdVector>
+  void merge(SimdVector& merged_output) {
     // Begin handling of edge cases.
     if (_sorted_buckets.empty()) {
       return;

@@ -147,8 +147,8 @@ struct RadixPartition {
   }
 
  public:
-  void execute(simd_sort::simd_vector<SimdElement>& storage_memory, simd_sort::simd_vector<SimdElement>& working_memory,
-               auto&& transform_to_simd_element) {
+  template <typename SimdVector>
+  void execute(SimdVector& storage_memory, SimdVector& working_memory, auto&& transform_to_simd_element) {
     DebugAssert(_has_data, "No input data to partition.");
     DebugAssert(!_executed, "RadixPartition execute can only be called once.");
 
@@ -272,11 +272,11 @@ struct RadixPartition {
   }
 
   template <typename T>
-  T* get_working_memory(size_t partition_index, simd_sort::simd_vector<SimdElement>& working_memory) {
+  T* get_working_memory(size_t partition_index, SimdElement* working_memory_start) {
     DebugAssert(_executed, "Do not call before execute.");
     DebugAssert(partition_index >= 0 && partition_index < num_partitions(), "Invalid partition index.");
     DebugAssert(_partiton_offsets[partition_index] % 8 == 0, "Offset has to be cache_aligned.");
-    return reinterpret_cast<T*>(working_memory.data() + _partiton_offsets[partition_index]);
+    return reinterpret_cast<T*>(working_memory_start + _partiton_offsets[partition_index]);
   }
 };
 

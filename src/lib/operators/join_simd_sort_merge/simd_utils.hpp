@@ -14,6 +14,8 @@
 
 #include <boost/align/aligned_allocator.hpp>
 
+#include "uninitialized_vector.hpp"
+
 #ifndef SYSTEM_L2_CACHE_SIZE
 constexpr auto L2_SIZE = 1048576;  // 1024 KiB (default)
 #else
@@ -32,6 +34,10 @@ using aligned_vector = std::vector<T, boost::alignment::aligned_allocator<T, ali
 
 template <typename T>
 using simd_vector = aligned_vector<T, 64>;
+
+template <typename T>
+  requires std::is_trivially_destructible_v<T>
+using uninitialized_simd_vector = uninitialized_vector<T, boost::alignment::aligned_allocator<T, 64>>;
 
 template <typename T>
 constexpr std::size_t block_size() {
