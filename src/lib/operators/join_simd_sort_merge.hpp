@@ -12,7 +12,7 @@
 #include "types.hpp"
 
 namespace hyrise {
-using SimdElementList = simd_sort::uninitialized_simd_vector<SimdElement>;
+using SimdElementList = simd_sort::simd_vector<SimdElement>;
 
 class JoinSimdSortMerge : public AbstractJoinOperator {
  public:
