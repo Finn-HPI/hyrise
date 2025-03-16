@@ -6,7 +6,7 @@
 #include <random>
 #include <span>
 
-#include "operators/join_simd_sort_merge/radix_partitioning.hpp"
+#include "operators/join_simd_sort_merge/radix_partitioning_simd_elements.hpp"
 #include "operators/join_simd_sort_merge/simd_utils.hpp"
 #include "operators/join_simd_sort_merge/util.hpp"
 #include "types.hpp"
@@ -16,24 +16,14 @@ using namespace hyrise;  // NOLINT(build/namespaces)
 
 namespace {
 template <class Tp>
-inline __attribute__((always_inline)) void do_not_optimize_away(Tp const& value) {
+[[maybe_unused]] inline __attribute__((always_inline)) void do_not_optimize_away(Tp const& value) {
   asm volatile("" : : "r,m"(value) : "memory");  // NOLINT
 }
 
 // leaf_size is required to be a multiple of 64 due to alignment assumptions.
 template <typename T>
-void benchmark(size_t number_of_partitions, std::ofstream& out, size_t iterations, bool warmup = false) {
-  std::mt19937 gen(42);
-
-  auto num_items = size_t{100'000'000};
-  auto items = std::vector<SimdElement>(num_items);
-
-  auto dist = std::uniform_int_distribution<uint32_t>(0, std::numeric_limits<uint32_t>::max());
-  for (auto& item : items) {
-    item.key = dist(gen);
-    item.index = dist(gen);
-  }
-
+[[maybe_unused]] void benchmark(std::span<SimdElement> items, size_t number_of_partitions, std::ofstream& out,
+                                size_t iterations, bool warmup = false) {
   auto avg_time_histogram = size_t{0};
   auto avg_time_init = size_t{0};
   auto avg_time_partition = size_t{0};
@@ -61,8 +51,7 @@ void benchmark(size_t number_of_partitions, std::ofstream& out, size_t iteration
   avg_time_init /= iterations;
   avg_time_partition /= iterations;
 
-  out << number_of_partitions << "," << avg_time_histogram << "," << avg_time_init << "," << avg_time_partition
-      << std::endl;
+  out << number_of_partitions << "," << avg_time_histogram << "," << avg_time_init << "," << avg_time_partition << '\n';
 }
 }  // namespace
 
@@ -80,17 +69,30 @@ int main() {
 
   file << "num_partitions,time_histogram,time_init,time_partition" << '\n';
 
+  std::mt19937 gen(42);
+
+  auto num_items = size_t{100'000'000};
+  auto items = std::vector<SimdElement>(num_items);
+
+  auto dist = std::uniform_int_distribution<uint32_t>(0, std::numeric_limits<uint32_t>::max());
+  for (auto& item : items) {
+    item.key = dist(gen);
+    item.index = dist(gen);
+  }
+
+  const auto iterations = 5;
+
   // Start warmup runs.
-  benchmark<int64_t>(32, file, 5, true);
-  benchmark<int64_t>(64, file, 5, true);
-  benchmark<int64_t>(128, file, 5, true);
+  benchmark<int64_t>(items, 32, file, iterations, true);
+  benchmark<int64_t>(items, 64, file, iterations, true);
+  benchmark<int64_t>(items, 128, file, iterations, true);
   // End warmup runs.
 
-  const auto max_fan_out = size_t{16384};
+  const auto max_fan_out = size_t{32};
   for (auto fan_out = size_t{32}; fan_out <= max_fan_out; fan_out *= 2) {
-    std::cout << "fan_out: " << fan_out << std::endl;
-    benchmark<int64_t>(fan_out, file, 5);
+    std::cout << "fan_out: " << fan_out << '\n';
+    benchmark<int64_t>(items, fan_out, file, iterations);
   }
-  // file.close();
+  file.close();
   return 0;
 }
