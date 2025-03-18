@@ -216,11 +216,14 @@ struct RadixPartition {
       if (local_offset == BUFFER_SIZE - 1) {
         auto* destination = output_start_address + slot - (BUFFER_SIZE - 1);
         auto* source = reinterpret_cast<SimdElement*>(&buffer);
+#if defined(__powerpc__) || defined(__ppc__) || defined(__PPC__)
+        std::memcpy(destination, source, 8 * BUFFER_SIZE);
+#else
         for (auto cache_line_index = size_t{0}; cache_line_index < NUM_CACHE_LINES; ++cache_line_index) {
           const auto offset = cache_line_index * TUPLES_PER_CACHELINE;
           _store_cacheline(destination + offset, source + offset);
         }
-        // std::memcpy(destination, source, 8 * BUFFER_SIZE);
+#endif
       }
       buffer.data.output_offset = slot + 1;
     }

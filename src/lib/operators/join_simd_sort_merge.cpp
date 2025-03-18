@@ -976,6 +976,7 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
     auto timer = Timer{};
     auto left_column_materializer = SMJColumnMaterializer<T>(materialize_null);
 
+    auto total_filter_count = uint64_t{0};
     auto save_materialized_output = [&](MaterializedSegmentList<T>& materialized_segments, RowIDPosList& null_rows,
                                         ChunkID& chunk_count, ChunkOffset& max_chunk_size, T& min,
                                         T& max) -> std::pair<T, T> {
@@ -987,20 +988,20 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
       null_values = std::move(null_rows);
       materialized_segment_list = std::move(materialized_segments);
       _performance.set_step_runtime(materialize_step, timer.lap());
-
+      _performance.filter_count = total_filter_count;
       return {min, max};
     };
 
     if (use_bloom_filter) {
       auto [materialized_segments, null_rows, chunk_count, max_chunk_size, min, max] =
-          std::move(left_column_materializer.template materialize<true>(table, column_id, output_bloom_filter,
-                                                                        input_bloom_filter));
+          std::move(left_column_materializer.template materialize<true>(table, column_id, total_filter_count,
+                                                                        output_bloom_filter, input_bloom_filter));
       return save_materialized_output(materialized_segments, null_rows, chunk_count, max_chunk_size, min, max);
     }
 
     auto [materialized_segments, null_rows, chunk_count, max_chunk_size, min, max] =
-        std::move(left_column_materializer.template materialize<false>(table, column_id, output_bloom_filter,
-                                                                       input_bloom_filter));
+        std::move(left_column_materializer.template materialize<false>(table, column_id, total_filter_count,
+                                                                       output_bloom_filter, input_bloom_filter));
     return save_materialized_output(materialized_segments, null_rows, chunk_count, max_chunk_size, min, max);
   }
 

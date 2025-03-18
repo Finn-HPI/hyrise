@@ -21,7 +21,11 @@ namespace hyrise::simd_sort {
 
 constexpr auto LEVEL2_MERGE_KERNEL_SCALE = 2;
 constexpr auto LEVEL3_MERGE_KERNEL_SCALE = 4;
+#if defined(__powerpc__) || defined(__ppc__) || defined(__PPC__)
+constexpr auto LEVEL4_MERGE_KERNEL_SCALE = 8;
+#else
 constexpr auto LEVEL4_MERGE_KERNEL_SCALE = 4;
+#endif
 
 template <typename T>
 struct DataChunk {

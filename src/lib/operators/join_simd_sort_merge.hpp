@@ -49,7 +49,7 @@ class JoinSimdSortMerge : public AbstractJoinOperator {
 #elif defined(__AVX2__)
   using SortingType = double;
 #elif defined(__powerpc__) || defined(__ppc__) || defined(_ARCH_PPC)
-  using SortingType = int64_t;
+  using SortingType = double;
 #elif defined(__arm__) || defined(__aarch64__)
   using SortingType = double;
 #else
