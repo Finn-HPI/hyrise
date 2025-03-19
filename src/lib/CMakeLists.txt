@@ -703,6 +703,7 @@ set(
     magic_enum
     sqlparser
     uninitialized_vector
+    xxhash
     libzstd_static
     ${CMAKE_DL_LIBS}
     # Additional libraries added with target_link_libraries_system below

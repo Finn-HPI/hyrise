@@ -15,6 +15,7 @@
 // #include "operators/join_sort_merge/column_materializer.hpp"
 #include "operators/multi_predicate_join/multi_predicate_join_evaluator.hpp"
 #include "utils/timer.hpp"
+#include "xxhash32.hpp"
 
 #if defined(__x86_64__)
 #include "immintrin.h"
@@ -60,14 +61,7 @@ struct Data32BitCompression<T> {
 template <>
 struct Data32BitCompression<double> {
   static uint32_t compress(double& value, const double& /*min_value*/, const double& /*max_value*/) {
-    auto unsigned_value = std::bit_cast<uint64_t>(value);
-    const auto high = static_cast<uint32_t>(unsigned_value >> 32u);
-    const auto low = static_cast<uint32_t>(unsigned_value);
-
-    std::size_t hash = 0;
-    boost::hash_combine(hash, high);
-    boost::hash_combine(hash, low);
-    return static_cast<uint32_t>(hash);
+    return XXHash32::hash(&value, sizeof(double), 0);
   }
 };
 
@@ -79,14 +73,7 @@ struct Data32BitCompression<int64_t> {
       return Data32BitCompression<uint32_t>::compress(static_cast<uint32_t>(value - min_value), 0,
                                                       static_cast<uint32_t>(max_value - min_value));
     }
-    auto unsigned_value = static_cast<uint64_t>(value);
-    const auto high = static_cast<uint32_t>(unsigned_value >> 32u);
-    const auto low = static_cast<uint32_t>(unsigned_value);
-
-    std::size_t hash = 0;
-    boost::hash_combine(hash, high);
-    boost::hash_combine(hash, low);
-    return static_cast<uint32_t>(hash);
+    return XXHash32::hash(&value, sizeof(double), 0);
   }
 };
 
@@ -94,12 +81,13 @@ template <>
 struct Data32BitCompression<hyrise::pmr_string> {
   static uint32_t compress(hyrise::pmr_string& value, const hyrise::pmr_string& min_value [[maybe_unused]],
                            const hyrise::pmr_string& max_value [[maybe_unused]]) {
-    auto key = uint32_t{0};
-    const auto string_length = value.length();
-    for (auto index = std::size_t{0}; index < string_length; index++) {
-      key = ((key << 5u) + key) ^ static_cast<uint32_t>(value[index]);
-    }
-    return key;
+    // auto key = uint32_t{0};
+    // const auto string_length = value.length();
+    // for (auto index = std::size_t{0}; index < string_length; index++) {
+    //   key = ((key << 5u) + key) ^ static_cast<uint32_t>(value[index]);
+    // }
+    // return key;
+    return XXHash32::hash(&value, value.size() * sizeof(char), 0);
   }
 };
 

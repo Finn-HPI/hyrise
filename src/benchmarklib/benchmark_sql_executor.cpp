@@ -61,18 +61,35 @@ std::pair<SQLPipelineStatus, std::shared_ptr<const Table>> BenchmarkSQLExecutor:
   }
 
   if (!Hyrise::get().warm_up && _visualize_prefix) {
+    auto add_input_side = [](const std::shared_ptr<const AbstractOperator>& source, std::ofstream& file,
+                             bool left = true) {
+      auto row_count = size_t{0};
+      auto chunks = size_t{0};
+
+      const auto& performance_data = *source->performance_data;
+      if (source->executed() && performance_data.has_output) {
+        row_count = performance_data.output_row_count;
+        chunks = performance_data.output_chunk_count;
+      }
+      file << (left ? "left_rows: " : "right_rows: ") << row_count << (left ? ", left_chunks: " : ", right_chunks: ")
+           << chunks;
+    };
+
     auto visualized_ops = std::unordered_set<std::shared_ptr<const AbstractOperator>>{};
     std::function<void(const std::shared_ptr<const AbstractOperator>&, std::ofstream&)> traverse_pqp =
         [&](const std::shared_ptr<const AbstractOperator>& op, std::ofstream& file) {
           if (visualized_ops.find(op) != visualized_ops.end()) {
             return;
           }
-
           if (op->name() == "JoinSimdSortMerge" || op->name() == "JoinHash") {
             const auto& performance_data = *op->performance_data;
             if (op->executed()) {
               auto total = performance_data.walltime;
               file << total << '|';
+              add_input_side(op->left_input(), file, true);
+              file << ", ";
+              add_input_side(op->right_input(), file, false);
+              file << '|';
               file << op->description(DescriptionMode::SingleLine) << '|';
 
               auto operator_performance_data_stream = std::stringstream{};
@@ -81,7 +98,6 @@ std::pair<SQLPipelineStatus, std::shared_ptr<const Table>> BenchmarkSQLExecutor:
               file << performance_string << '\n';
             }
           }
-
           visualized_ops.insert(op);
           if (op->left_input()) {
             auto left = op->left_input();

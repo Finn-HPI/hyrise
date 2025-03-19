@@ -114,6 +114,10 @@ add_library(uninitialized_vector INTERFACE)
 target_include_directories(uninitialized_vector INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/uninitialized_vector/)
 target_sources(uninitialized_vector INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/uninitialized_vector/uninitialized_vector.hpp)
 
+add_library(xxhash INTERFACE)
+target_include_directories(xxhash INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/xxhash/)
+target_sources(xxhash INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/xxhash/xxhash32.hpp)
+
 
 # Build custom jemalloc library
 if(NOT APPLE)
