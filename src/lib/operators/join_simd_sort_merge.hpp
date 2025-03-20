@@ -40,6 +40,14 @@ class JoinSimdSortMerge : public AbstractJoinOperator {
     OutputWriting
   };
 
+  struct PerformanceData : public OperatorPerformanceData<OperatorSteps> {
+    void output_to_stream(std::ostream& stream, DescriptionMode description_mode) const override;
+
+    size_t radix_bits{0};
+  };
+
+  static constexpr auto CLUSTER_COUNT = 256;
+
   static constexpr auto JOB_SPAWN_THRESHOLD = 500;
 
  protected:

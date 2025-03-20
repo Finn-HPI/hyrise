@@ -119,7 +119,7 @@ JoinSimdSortMerge::JoinSimdSortMerge(const std::shared_ptr<const AbstractOperato
                                      const OperatorJoinPredicate& primary_predicate,
                                      const std::vector<OperatorJoinPredicate>& secondary_predicates)
     : AbstractJoinOperator(OperatorType::JoinSortMerge, left, right, mode, primary_predicate, secondary_predicates,
-                           std::make_unique<OperatorPerformanceData<OperatorSteps>>()) {}
+                           std::make_unique<PerformanceData>()) {}
 
 std::shared_ptr<AbstractOperator> JoinSimdSortMerge::_on_deep_copy(
     const std::shared_ptr<AbstractOperator>& copied_left_input,
@@ -204,7 +204,7 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
   const JoinMode _mode;
 
   size_t _num_cpus;
-  size_t _cluster_count{256};
+  size_t _cluster_count{CLUSTER_COUNT};
 
   std::vector<simd_sort::simd_vector<ColumnType>> _sorted_values_left;
   std::vector<simd_sort::simd_vector<ColumnType>> _sorted_values_right;
@@ -1239,5 +1239,13 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
     return result_table;
   }
 };
+
+void JoinSimdSortMerge::PerformanceData::output_to_stream(std::ostream& stream,
+                                                          DescriptionMode description_mode) const {
+  OperatorPerformanceData<OperatorSteps>::output_to_stream(stream, description_mode);
+
+  const auto separator = (description_mode == DescriptionMode::SingleLine ? ' ' : '\n');
+  stream << separator << "Radix bits: " << std::log2<size_t>(CLUSTER_COUNT) << ".";
+}
 
 }  // namespace hyrise
