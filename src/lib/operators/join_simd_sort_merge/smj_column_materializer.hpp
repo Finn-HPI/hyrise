@@ -50,8 +50,9 @@ class SMJColumnMaterializer {
   // the materialized segments and a list of null row ids if _materialize_null is true.
   template <bool use_bloom_filter>
   std::tuple<MaterializedSegmentList<T>, RowIDPosList, ChunkID, ChunkOffset, T, T> materialize(
-      const std::shared_ptr<const Table>& input, const ColumnID column_id, uint64_t& total_filter_count,
-      BloomFilter& output_bloom_filter, const BloomFilter& input_bloom_filter = ALL_TRUE_BLOOM_FILTER) {
+      const std::shared_ptr<const Table>& input, const ColumnID column_id,
+      [[maybe_unused]] uint64_t& total_filter_count, BloomFilter& output_bloom_filter,
+      const BloomFilter& input_bloom_filter = ALL_TRUE_BLOOM_FILTER) {
     const auto chunk_count = input->chunk_count();
     const std::hash<T> hash_function;
 
@@ -107,10 +108,11 @@ class SMJColumnMaterializer {
           if (Hyrise::get().is_multi_threaded()) {
             const auto lock = std::lock_guard<std::mutex>{output_bloom_filter_mutex};
             output_bloom_filter |= local_output_bloom_filter;
-            total_filter_count += filter_count;
-          } else {
-            total_filter_count += filter_count;
+            // total_filter_count += filter_count;
           }
+          // else {
+          //   total_filter_count += filter_count;
+          // }
 
         } else {
           const auto& segment = input->get_chunk(chunk_id)->get_segment(column_id);
@@ -153,7 +155,7 @@ class SMJColumnMaterializer {
       const std::shared_ptr<AbstractSegment>& segment, const ChunkID chunk_id,
       [[maybe_unused]] RowIDPosList& null_rows_output, std::reference_wrapper<BloomFilter>& used_output_bloom_filter,
       const BloomFilter& input_bloom_filter, const std::hash<T>& hash_function, ChunkOffset num_rows,
-      uint64_t& filter_count) {
+      [[maybe_unused]] uint64_t& filter_count) {
     auto elements = MaterializedSegment<T>{};
     elements.resize(num_rows);
     auto elements_iter = elements.begin();
@@ -171,9 +173,10 @@ class SMJColumnMaterializer {
           used_output_bloom_filter.get()[hashed_value & BLOOM_FILTER_MASK] = true;
           *elements_iter = MaterializedValue<T>{{RowID(chunk_id, position.chunk_offset())}, value};
           ++elements_iter;
-        } else {
-          ++filter_count;
         }
+        // else {
+        //   ++filter_count;
+        // }
       }
     });
 

@@ -270,8 +270,9 @@ static const auto ALL_TRUE_BLOOM_FILTER = ~BloomFilter(BLOOM_FILTER_SIZE);
 //                             Bloom filter is false
 template <typename T, typename HashedType, bool keep_null_values>
 RadixContainer<T> materialize_input(const std::shared_ptr<const Table>& in_table, const ColumnID column_id,
-                                    uint64_t& total_filter_count, std::vector<std::vector<size_t>>& histograms,
-                                    const size_t radix_bits, BloomFilter& output_bloom_filter,
+                                    [[maybe_unused]] uint64_t& total_filter_count,
+                                    std::vector<std::vector<size_t>>& histograms, const size_t radix_bits,
+                                    BloomFilter& output_bloom_filter,
                                     const BloomFilter& input_bloom_filter = ALL_TRUE_BLOOM_FILTER) {
   // Retrieve input chunk_count as it might change during execution if we work on a non-reference table
   auto chunk_count = in_table->chunk_count();
@@ -337,7 +338,7 @@ RadixContainer<T> materialize_input(const std::shared_ptr<const Table>& in_table
 
       auto reference_chunk_offset = ChunkOffset{0};
 
-      auto filter_count = uint64_t{0};
+      // auto filter_count = uint64_t{0};
       const auto segment = chunk_in->get_segment(column_id);
       segment_with_iterators<T>(*segment, [&](auto iter, auto end) {
         using IterableType = typename decltype(iter)::IterableType;
@@ -364,10 +365,8 @@ RadixContainer<T> materialize_input(const std::shared_ptr<const Table>& in_table
             auto skip = false;
             if (!value.is_null() && !input_bloom_filter[hashed_value & BLOOM_FILTER_MASK] && !keep_null_values) {
               // Value in not present in input bloom filter and can be skipped
-              ++filter_count;
-              if (!keep_null_values) {
-                skip = true;
-              }
+              // ++filter_count;
+              skip = true;
             }
 
             if (!skip) {
@@ -421,10 +420,11 @@ RadixContainer<T> materialize_input(const std::shared_ptr<const Table>& in_table
         // Merge the local_output_bloom_filter into output_bloom_filter
         const auto lock = std::lock_guard<std::mutex>{output_bloom_filter_mutex};
         output_bloom_filter |= local_output_bloom_filter;
-        total_filter_count += filter_count;
-      } else {
-        total_filter_count += filter_count;
+        // total_filter_count += filter_count;
       }
+      // else {
+      //   total_filter_count += filter_count;
+      // }
     };
     if (JoinHash::JOB_SPAWN_THRESHOLD > num_rows) {
       materialize();
