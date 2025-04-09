@@ -54,13 +54,13 @@ target_link_libraries_system(
 
 add_executable(
     hyriseBenchmarkPlayground
-
+    zipfian_int_distribution.hpp
     benchmark_playground.cpp
-    micro_benchmark_basic_fixture.cpp
-    micro_benchmark_basic_fixture.hpp
-    micro_benchmark_main.cpp
-    micro_benchmark_utils.cpp
-    micro_benchmark_utils.hpp
+    # micro_benchmark_basic_fixture.cpp
+    # micro_benchmark_basic_fixture.hpp
+    # micro_benchmark_main.cpp
+    # micro_benchmark_utils.cpp
+    # micro_benchmark_utils.hpp
 )
 
 target_link_libraries(
