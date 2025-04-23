@@ -294,7 +294,7 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
       for (auto index = size_t{0}; index < num_items; ++index) {
         DebugAssert(values.size() > index || IS_LOSSLESS_COMPRESSION, "Values has broken size.");
         const auto row_id = _unpack_row_id(elements[index].index, chunk_offset_bits);
-        if constexpr (requires { action(row_id); }) {
+        if constexpr (IS_LOSSLESS_COMPRESSION || requires { action(row_id); }) {
           action(row_id);
         } else {
           const auto& value = IS_LOSSLESS_COMPRESSION ? ColumnType{} : values[index];
@@ -311,17 +311,17 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
             action(left_row_id, right_row_id);
           });
         });
-        return;
-      }
-      // Handle pmr_string values.
-      this->for_every_row_id([&](const RowID& left_row_id, const ColumnType& value_left) {
-        other_range.for_every_row_id([&](const RowID& right_row_id, const ColumnType& value_right) {
-          if (value_left != value_right) {
-            return;
-          }
-          action(left_row_id, right_row_id);
+      } else {
+        // Handle pmr_string values.
+        this->for_every_row_id([&](const RowID& left_row_id, const ColumnType& value_left) {
+          other_range.for_every_row_id([&](const RowID& right_row_id, const ColumnType& value_right) {
+            if (value_left != value_right) {
+              return;
+            }
+            action(left_row_id, right_row_id);
+          });
         });
-      });
+      }
     }
   };
 
@@ -394,19 +394,34 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
                                                       MultiPredicateJoinEvaluator& multi_predicate_join_evaluator) {
     DebugAssert(_primary_predicate_condition == PredicateCondition::Equals, "Primary predicate has to be Equals.");
 
-    left_range.for_every_row_id([&](const RowID left_row_id, const ColumnType& left_value) {
-      auto left_row_id_matched = false;
-      right_range.for_every_row_id([&](const RowID right_row_id, const ColumnType& right_value) {
-        if (multi_predicate_join_evaluator.satisfies_all_predicates(left_row_id, right_row_id) &&
-            left_value == right_value) {
-          _emit_combination(bucket_index, left_row_id, right_row_id);
-          left_row_id_matched = true;
+    if constexpr (IS_LOSSLESS_COMPRESSION) {
+      left_range.for_every_row_id([&](const RowID left_row_id) {
+        auto left_row_id_matched = false;
+        right_range.for_every_row_id([&](const RowID right_row_id) {
+          if (multi_predicate_join_evaluator.satisfies_all_predicates(left_row_id, right_row_id)) {
+            _emit_combination(bucket_index, left_row_id, right_row_id);
+            left_row_id_matched = true;
+          }
+        });
+        if (!left_row_id_matched) {
+          _emit_combination(bucket_index, left_row_id, NULL_ROW_ID);
         }
       });
-      if (!left_row_id_matched) {
-        _emit_combination(bucket_index, left_row_id, NULL_ROW_ID);
-      }
-    });
+    } else {
+      left_range.for_every_row_id([&](const RowID left_row_id, const ColumnType& left_value) {
+        auto left_row_id_matched = false;
+        right_range.for_every_row_id([&](const RowID right_row_id, const ColumnType& right_value) {
+          if (multi_predicate_join_evaluator.satisfies_all_predicates(left_row_id, right_row_id) &&
+              left_value == right_value) {
+            _emit_combination(bucket_index, left_row_id, right_row_id);
+            left_row_id_matched = true;
+          }
+        });
+        if (!left_row_id_matched) {
+          _emit_combination(bucket_index, left_row_id, NULL_ROW_ID);
+        }
+      });
+    }
   }
 
   // Only for multi predicated right outer joins.
@@ -419,19 +434,34 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
                                                        MultiPredicateJoinEvaluator& multi_predicate_join_evaluator) {
     DebugAssert(_primary_predicate_condition == PredicateCondition::Equals, "Primary predicate has to be Equals.");
 
-    right_range.for_every_row_id([&](const RowID right_row_id, const ColumnType& right_value) {
-      auto right_row_id_matched = false;
-      left_range.for_every_row_id([&](const RowID left_row_id, const ColumnType& left_value) {
-        if (multi_predicate_join_evaluator.satisfies_all_predicates(left_row_id, right_row_id) &&
-            left_value == right_value) {
-          _emit_combination(bucket_index, left_row_id, right_row_id);
-          right_row_id_matched = true;
+    if constexpr (IS_LOSSLESS_COMPRESSION) {
+      right_range.for_every_row_id([&](const RowID right_row_id) {
+        auto right_row_id_matched = false;
+        left_range.for_every_row_id([&](const RowID left_row_id) {
+          if (multi_predicate_join_evaluator.satisfies_all_predicates(left_row_id, right_row_id)) {
+            _emit_combination(bucket_index, left_row_id, right_row_id);
+            right_row_id_matched = true;
+          }
+        });
+        if (!right_row_id_matched) {
+          _emit_combination(bucket_index, NULL_ROW_ID, right_row_id);
         }
       });
-      if (!right_row_id_matched) {
-        _emit_combination(bucket_index, NULL_ROW_ID, right_row_id);
-      }
-    });
+    } else {
+      right_range.for_every_row_id([&](const RowID right_row_id, const ColumnType& right_value) {
+        auto right_row_id_matched = false;
+        left_range.for_every_row_id([&](const RowID left_row_id, const ColumnType& left_value) {
+          if (multi_predicate_join_evaluator.satisfies_all_predicates(left_row_id, right_row_id) &&
+              left_value == right_value) {
+            _emit_combination(bucket_index, left_row_id, right_row_id);
+            right_row_id_matched = true;
+          }
+        });
+        if (!right_row_id_matched) {
+          _emit_combination(bucket_index, NULL_ROW_ID, right_row_id);
+        }
+      });
+    }
   }
 
   // Only for multi-predicate full outer joins.
@@ -446,20 +476,36 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
     DebugAssert(_primary_predicate_condition == PredicateCondition::Equals, "Primary predicate has to be Equals.");
     auto matched_right_row_ids = RowHashSet{};
 
-    left_range.for_every_row_id([&](const RowID left_row_id, const ColumnType& left_value) {
-      auto left_row_id_matched = false;
-      right_range.for_every_row_id([&](const RowID right_row_id, const ColumnType& right_value) {
-        if (multi_predicate_join_evaluator.satisfies_all_predicates(left_row_id, right_row_id) &&
-            left_value == right_value) {
-          _emit_combination(bucket_index, left_row_id, right_row_id);
-          left_row_id_matched = true;
-          matched_right_row_ids.insert(right_row_id);
+    if constexpr (IS_LOSSLESS_COMPRESSION) {
+      left_range.for_every_row_id([&](const RowID left_row_id) {
+        auto left_row_id_matched = false;
+        right_range.for_every_row_id([&](const RowID right_row_id) {
+          if (multi_predicate_join_evaluator.satisfies_all_predicates(left_row_id, right_row_id)) {
+            _emit_combination(bucket_index, left_row_id, right_row_id);
+            left_row_id_matched = true;
+            matched_right_row_ids.insert(right_row_id);
+          }
+        });
+        if (!left_row_id_matched) {
+          _emit_combination(bucket_index, left_row_id, NULL_ROW_ID);
         }
       });
-      if (!left_row_id_matched) {
-        _emit_combination(bucket_index, left_row_id, NULL_ROW_ID);
-      }
-    });
+    } else {
+      left_range.for_every_row_id([&](const RowID left_row_id, const ColumnType& left_value) {
+        auto left_row_id_matched = false;
+        right_range.for_every_row_id([&](const RowID right_row_id, const ColumnType& right_value) {
+          if (multi_predicate_join_evaluator.satisfies_all_predicates(left_row_id, right_row_id) &&
+              left_value == right_value) {
+            _emit_combination(bucket_index, left_row_id, right_row_id);
+            left_row_id_matched = true;
+            matched_right_row_ids.insert(right_row_id);
+          }
+        });
+        if (!left_row_id_matched) {
+          _emit_combination(bucket_index, left_row_id, NULL_ROW_ID);
+        }
+      });
+    }
 
     // Add null value combinations for right row ids that have no match.
     right_range.for_every_row_id([&](RowID right_row_id) {
@@ -1116,14 +1162,14 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
   std::shared_ptr<const Table> _on_execute() override {
     if constexpr (HYRISE_DEBUG) {
       std::cout << "Execute JoinSimdSortMerge: L2-Cache = " << L2_SIZE << '\n';
-      // std::cout << "float: " << std::is_same_v<ColumnType, float> << " int32: "
-      //           << std::is_same_v<ColumnType, int32_t> << '\n';
+      std::cout << "float: " << std::is_same_v<ColumnType, float> << " int32: "
+                << std::is_same_v<ColumnType, int32_t> << '\n';
       // std::cout << "double: " << std::is_same_v<ColumnType, double> << " int64: "
       //           << std::is_same_v<ColumnType, int64_t> << '\n';
       // std::cout << "string: " << std::is_same_v<ColumnType, pmr_string> << '\n';
       // std::cout << "type size: " << sizeof(ColumnType) << "mode: " << _mode << '\n';
       Assert(sizeof(ColumnType) == 4, "Column type was not size 4");
-      // std::cout << "secondary_join_predicates: " << _secondary_join_predicates.size() << std::endl;
+      std::cout << "secondary_join_predicates: " << _secondary_join_predicates.size() << std::endl;
       // std::cout << _left_input_table->row_count() << " " << _right_input_table->row_count() << std::endl;
     }
 
