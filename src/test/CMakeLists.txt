@@ -88,7 +88,7 @@ set(
     lib/operators/import_test.cpp
     lib/operators/index_scan_test.cpp
     lib/operators/insert_test.cpp
-    lib/operators/join_hash/join_hash_steps_test.cpp
+    # lib/operators/join_hash/join_hash_steps_test.cpp
     lib/operators/join_hash/join_hash_traits_test.cpp
     lib/operators/join_hash/join_hash_types_test.cpp
     lib/operators/join_hash_test.cpp

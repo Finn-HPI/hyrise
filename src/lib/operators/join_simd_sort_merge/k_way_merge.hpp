@@ -15,12 +15,12 @@ class KWayMerge {
  public:
   using value_type = T;
 
-  explicit KWayMerge(std::vector<std::unique_ptr<Bucket>>& sorted_buckets)
-      : _sorted_buckets(std::move(sorted_buckets)) {}
+  explicit KWayMerge(std::vector<Bucket*>& sorted_buckets) : _sorted_buckets(std::move(sorted_buckets)) {}
 
-  simd_sort::simd_vector<SimdElement> merge() {
+  template <typename SimdVector>
+  void merge(SimdVector& merged_output) {
     if (_sorted_buckets.empty()) {
-      return {};
+      return;
     }
 
     auto leaf_nodes = std::vector<std::pair<T*, T*>>(_sorted_buckets.size());
@@ -34,15 +34,7 @@ class KWayMerge {
                                     }),
                      leaf_nodes.end());
 
-    auto total_output_size =
-        std::accumulate(_sorted_buckets.begin(), _sorted_buckets.end(), size_t{0}, [](size_t sum, const auto& bucket) {
-          return sum + bucket->size;
-        });
-
-    auto output = simd_sort::simd_vector<SimdElement>();
-    output.resize(total_output_size);
-
-    auto* output_begin = output.data();
+    auto* output_begin = merged_output.data();
 
     auto cmp = [](const auto& lhs, const auto& rhs) {
       return *(lhs.first) > *(rhs.first);
@@ -63,16 +55,14 @@ class KWayMerge {
       }
     }
 
-    DebugAssert(std::is_sorted(output.begin(), output.end(),
+    DebugAssert(std::is_sorted(merged_output.begin(), merged_output.end(),
                                [](auto& lhs, auto& rhs) {
                                  return *reinterpret_cast<T*>(&lhs) < *reinterpret_cast<T*>(&rhs);
                                }),
                 "Merged output is not sorted.");
-
-    return output;
   }
 
  private:
-  std::vector<std::unique_ptr<Bucket>> _sorted_buckets;
+  std::vector<Bucket*> _sorted_buckets;
 };
 }  // namespace hyrise::k_way_merge

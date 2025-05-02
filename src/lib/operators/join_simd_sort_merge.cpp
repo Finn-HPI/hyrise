@@ -334,33 +334,45 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
       return 0;
     }
     auto begin = elements.begin();
+    const auto end = elements.end();
+
     std::advance(begin, start_index);
     const auto run_value = _compare_value(begin->key);
 
-    constexpr auto LINEAR_SEARCH_ITEMS = std::size_t{128};
-    auto end = begin + LINEAR_SEARCH_ITEMS;
-    if (start_index + LINEAR_SEARCH_ITEMS >= elements.size()) {
-      // Set end of linear search to end of input vector if we would overshoot otherwise.
-      end = elements.end();
+    auto next = begin;
+    std::ranges::advance(next, 1, end);
+
+    if (_compare_value(next->key) > run_value) {
+      return 1;
     }
 
-    const auto linear_search_result = std::find_if(begin, end, [&](const auto& simd_element) {
-      return _compare_value(simd_element.key) > run_value;
-    });
+    auto prev = next;
 
-    if (linear_search_result != end) {
-      // Match found within the linearly scanned part.
-      return std::distance(begin, linear_search_result);
+    auto jump = std::iterator_traits<simd_sort::simd_vector<SimdElement>::iterator>::difference_type{1};
+    std::ranges::advance(next, jump, end);
+
+    while (next != end) {
+      if (_compare_value(next->key) > run_value) {
+        break;
+      }
+      prev = next;
+      std::ranges::advance(next, jump, end);
+      jump *= 2;
     }
 
-    if (linear_search_result == elements.end() || _compare_value(end->key) > run_value) {
-      // We did not find a larger value in the linearly scanned part and it spanned until the end of the input vector.
-      // That means all values up to the end are part of the run.
-      return std::distance(begin, end);
+    const auto start = prev;
+    std::ranges::advance(prev, 1, end);
+
+    if (next == end) {
+      const auto binary_search_result = std::upper_bound(prev, end, *start, [&](const auto& lhs, const auto& rhs) {
+        return _compare_value(lhs.key) < _compare_value(rhs.key);
+      });
+      return std::distance(begin, binary_search_result);
     }
 
-    // Binary search in case the run did not end within the linearly scanned part.
-    const auto binary_search_result = std::upper_bound(end, elements.end(), *end, [](const auto& lhs, const auto& rhs) {
+    std::ranges::advance(next, 1, end);
+
+    const auto binary_search_result = std::upper_bound(prev, next, *start, [&](const auto& lhs, const auto& rhs) {
       return _compare_value(lhs.key) < _compare_value(rhs.key);
     });
     return std::distance(begin, binary_search_result);
