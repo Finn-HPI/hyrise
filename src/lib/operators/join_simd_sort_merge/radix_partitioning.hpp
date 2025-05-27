@@ -129,17 +129,16 @@ struct RadixPartition {
 
   void __attribute__((always_inline)) _store_cacheline(auto* destination, auto* source) {
     auto nontemporal_store_vec = []<typename VecType>(auto* src, auto* dest) {
-      auto cache_line_vec = __builtin_nontemporal_load(src);
+      auto cache_line_vec = simd_sort::load_aligned<VecType>(src);
       __builtin_nontemporal_store(cache_line_vec, dest);
     };
 #if defined(__AVX512F__)
-    using Vec = simd_sort::Vec<64, int64_t>;  // 512-bit Vector.
+
+    using Vec = simd_sort::Vec<64, int64_t>;
     nontemporal_store_vec.template operator()<Vec>(reinterpret_cast<Vec*>(source), reinterpret_cast<Vec*>(destination));
-#elif defined(__powerpc__) || defined(__ppc__) || defined(__PPC__)
-    using Vec = simd_sort::Vec<128, int64_t>;  // 1024-bit Vector.
-    nontemporal_store_vec.template operator()<Vec>(reinterpret_cast<Vec*>(source), reinterpret_cast<Vec*>(destination));
+
 #else
-    using Vec = simd_sort::Vec<32, int64_t>;  // 256-bit Vector.
+    using Vec = simd_sort::Vec<32, int64_t>;
     nontemporal_store_vec.template operator()<Vec>(reinterpret_cast<Vec*>(source), reinterpret_cast<Vec*>(destination));
     nontemporal_store_vec.template operator()<Vec>(reinterpret_cast<Vec*>(source) + 1,
                                                    reinterpret_cast<Vec*>(destination) + 1);
@@ -238,7 +237,6 @@ struct RadixPartition {
           _store_cacheline(destination + offset, source + offset);
         }
 #endif
-        // std::memcpy(destination, source, 8 * BUFFER_SIZE);
       }
       buffer.data.output_offset = slot + 1;
     });
