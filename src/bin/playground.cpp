@@ -27,8 +27,8 @@ using namespace hyrise;  // NOLINT(build/namespaces)
 namespace {
 
 constexpr size_t cache_line_padding(size_t partition_fan_out) {
-  constexpr auto CACHE_LINE_SIZE = 64;
-  return (partition_fan_out * CACHE_LINE_SIZE / sizeof(SimdElement));
+  return (partition_fan_out * radix_partition::CACHE_LINE_SIZE * radix_partition::NUM_CACHE_LINES /
+          sizeof(SimdElement));
 }
 
 constexpr size_t relation_padding(size_t thread_count, size_t partition_fan_out) {
@@ -129,13 +129,6 @@ void create_relation(Relation* relation, uint64_t num_tuples, uint32_t nthreads,
   uint64_t offset = 0;
 
   check_seed();
-
-  // relation->num_tuples = num_tuples;
-  //
-  // if (!relation->tuples) {
-  //   perror("memory must be allocated first");
-  //   return -1;
-  // }
 
   auto args = std::vector<create_arg_t>(nthreads);
   auto tid = std::vector<pthread_t>(nthreads);
@@ -239,7 +232,8 @@ using namespace hyrise::simd_sort;
 using namespace hyrise::radix_partition;
 using namespace hyrise::multiway_merging;
 
-[[maybe_unused]] bool is_sorted_helper(int64_t* items, uint64_t nitems) {
+template <typename T>
+[[maybe_unused]] bool is_sorted_helper(T* items, uint64_t nitems) {
   uint32_t curr = 0;
   uint64_t index{};
   bool warned = false;
@@ -248,11 +242,10 @@ using namespace hyrise::multiway_merging;
     if (tuples[index].key == curr) {
       if (!warned) {
         warned = true;
-        // std::cout << "[WARN] Equal items, still ok... item[" << index << "].key=" << tuples[index].key << std::endl;
       }
     } else if (tuples[index].key < curr) {
       std::cout << "[ERROR] item[" << index << "].key=" << tuples[index].key << " is less than item[" << (index - 1)
-                << "].key=" << curr << std::endl;
+                << "].key=" << curr << '\n';
       return false;
     }
 
@@ -305,7 +298,7 @@ using namespace hyrise::multiway_merging;
 #endif
 }
 
-using SortingType = int64_t;
+using SortingType = double;
 
 SortingType compare_value(uint32_t key) {
   return std::bit_cast<SortingType>(static_cast<uint64_t>(key) << 32u);
@@ -477,7 +470,7 @@ size_t join_per_hash(std::span<SimdElement> left_elements, std::span<SimdElement
                                                                                   num_tuples_in_bucket);
 
     // if (!is_sorted_helper(output_pointer, num_tuples_in_bucket)) {
-    //   std::cout << "===> " << tid << "-thread -> R is NOT sorted, size = " << num_tuples_in_bucket << std::endl;
+    //   std::cout << "===> " << tid << "-thread -> R is NOT sorted, size = " << num_tuples_in_bucket << '\n';
     // }
     thread_chunks[tid][bucket_index].relation_r.tuples = reinterpret_cast<SimdElement*>(output_pointer);
     thread_chunks[tid][bucket_index].relation_r.num_tuples = num_tuples_in_bucket;
@@ -493,9 +486,6 @@ size_t join_per_hash(std::span<SimdElement> left_elements, std::span<SimdElement
 
     simd_sort::sort<count_per_vector, SortingType, ExecutionStrategy::SEQUENTIAL>(input_pointer, output_pointer,
                                                                                   num_tuples_in_bucket);
-    // if (!is_sorted_helper(output_pointer, num_tuples_in_bucket)) {
-    //   std::cout << "===> " << tid << "-thread -> R is NOT sorted, size = " << num_tuples_in_bucket << std::endl;
-    // }
 
     thread_chunks[tid][bucket_index].relation_s.tuples = reinterpret_cast<SimdElement*>(output_pointer);
     thread_chunks[tid][bucket_index].relation_s.num_tuples = num_tuples_in_bucket;
@@ -507,6 +497,7 @@ size_t join_per_hash(std::span<SimdElement> left_elements, std::span<SimdElement
                                       ThreadInfo& thread_info, size_t thread_count) {
   const auto curr_tid = thread_info.tid;
   const auto bucket_ids_per_thread = CLUSTER_COUNT / thread_count;
+  // std::cout << "bucket_ids_per_thread: " << bucket_ids_per_thread << '\n';
   const auto start_bucket_id = curr_tid * bucket_ids_per_thread;
   const auto end_bucket_id = start_bucket_id + bucket_ids_per_thread;
 
@@ -530,11 +521,10 @@ size_t join_per_hash(std::span<SimdElement> left_elements, std::span<SimdElement
     }
   }
 
-  // std::cout << "output_size_r: " << output_size_r << ", output_size_s: " << output_size_s << std::endl;
-
   merged_tuples_r.resize(output_size_r);
   merged_tuples_s.resize(output_size_s);
   const auto buffer_size = L3_CACHE_SIZE / thread_count;
+
   auto mway_merge_r = MultiwayMergerBalkesen<choose_count_per_vector(), SortingType>(parts_r, buffer_size);
   auto mway_merge_s = MultiwayMergerBalkesen<choose_count_per_vector(), SortingType>(parts_s, buffer_size);
   mway_merge_r.merge(merged_tuples_r);
@@ -569,7 +559,6 @@ void join_thread(ThreadInfo& thread_info, std::barrier<>& sync_point [[maybe_unu
   auto r_buckets = std::span(buckets.data(), CLUSTER_COUNT);
   auto s_buckets = std::span(buckets.data() + CLUSTER_COUNT, CLUSTER_COUNT);
   partition_phase(r_buckets, s_buckets, thread_info);
-  // partition_phase2(r_buckets, s_buckets, thread_info, thread_count);
 
   sync_point.arrive_and_wait();
   if (tid == 0) {
@@ -578,6 +567,7 @@ void join_thread(ThreadInfo& thread_info, std::barrier<>& sync_point [[maybe_unu
 
   // Phase 2: Sorting local partitions
   sorting_phase(r_buckets, s_buckets, thread_info);
+
   sync_point.arrive_and_wait();
   if (tid == 0) {
     stop_timer(&thread_info.sort);
@@ -626,10 +616,10 @@ size_t simd_sort_merge_join(Relation* relation_r, Relation* relation_s) {
   count_per_thread[0] = relation_r->num_tuples / thread_count;
   count_per_thread[1] = relation_s->num_tuples / thread_count;
 
+  std::cout << count_per_thread[0] << " " << count_per_thread[1] << '\n';
+
   auto thread_infos = std::vector<ThreadInfo>(thread_count);
 
-  // auto threads = std::vector<std::shared_ptr<AbstractTask>>{};
-  // threads.reserve(thread_count);
   std::vector<std::jthread> threads;
   threads.reserve(thread_count);
 
@@ -687,8 +677,8 @@ size_t simd_sort_merge_join(Relation* relation_r, Relation* relation_s) {
 }  // namespace
 
 int main(int argc [[maybe_unused]], char** argv) {
-  const uint64_t r_size = {1'600'000'000};
-  const uint64_t s_size = uint64_t{1'600'000'000} * atoi(argv[1]);
+  const uint64_t r_size = {262144};
+  const uint64_t s_size = uint64_t{262144} * atoi(argv[1]);
   // const auto r_size = 16000000;
   // const auto s_size = 16000000;
 
