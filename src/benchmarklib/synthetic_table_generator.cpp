@@ -90,8 +90,10 @@ std::shared_ptr<Table> SyntheticTableGenerator::generate_table(
 
     auto segments = Segments(num_columns);
 
+    int32_t key = 0;
+
     for (auto column_index = ColumnID{0}; column_index < num_columns; ++column_index) {
-      jobs.emplace_back(std::make_shared<JobTask>([&, column_index]() {
+      jobs.emplace_back(std::make_shared<JobTask>([&, column_index, key]() {
         resolve_data_type(column_specifications[column_index].data_type, [&](const auto column_data_type) {
           using ColumnDataType = typename decltype(column_data_type)::type;
 
@@ -107,6 +109,7 @@ std::shared_ptr<Table> SyntheticTableGenerator::generate_table(
           auto probability_dist = std::uniform_real_distribution{0.0, 1.0};
           auto generate_value_by_distribution_type = std::function<int(void)>{};
 
+          auto chunk_key = key;
           // Generate distribution from column configuration.
           switch (column_data_distribution.distribution_type) {
             case DataDistributionType::Uniform: {
@@ -115,6 +118,14 @@ std::shared_ptr<Table> SyntheticTableGenerator::generate_table(
               generate_value_by_distribution_type = [uniform_dist, &probability_dist, &pseudorandom_engine]() {
                 const auto probability = probability_dist(pseudorandom_engine);
                 return static_cast<int>(std::round(boost::math::quantile(uniform_dist, probability)));
+              };
+              break;
+            }
+            case DataDistributionType::Key: {
+              generate_value_by_distribution_type = [&chunk_key]() {
+                auto current = chunk_key;
+                ++chunk_key;
+                return current;
               };
               break;
             }
@@ -191,6 +202,7 @@ std::shared_ptr<Table> SyntheticTableGenerator::generate_table(
       }));
       jobs.back()->schedule();
     }
+    key += static_cast<int>(chunk_size);
     Hyrise::get().scheduler()->wait_for_tasks(jobs);
 
     if (use_mvcc == UseMvcc::Yes) {

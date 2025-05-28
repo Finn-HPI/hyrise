@@ -14,7 +14,7 @@ namespace hyrise {
 
 class Table;
 
-enum class DataDistributionType { Uniform, NormalSkewed, Pareto };
+enum class DataDistributionType { Uniform, NormalSkewed, Pareto, Key };
 
 struct ColumnDataDistribution {
   static ColumnDataDistribution make_uniform_config(const double min, const double max) {
@@ -22,6 +22,15 @@ struct ColumnDataDistribution {
     config.min_value = min;
     config.max_value = max;
     config.num_different_values = static_cast<int>(std::floor(max - min));
+    return config;
+  }
+
+  static ColumnDataDistribution make_key_config(const double min, const double max) {
+    auto config = ColumnDataDistribution{};
+    config.min_value = min;
+    config.max_value = max;
+    config.num_different_values = static_cast<int>(std::floor(max - min));
+    config.distribution_type = DataDistributionType::Key;
     return config;
   }
 
