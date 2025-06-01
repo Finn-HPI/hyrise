@@ -6,6 +6,7 @@
 
 #include "operators/join_hash/join_hash_steps.hpp"
 #include "operators/join_helper/join_output_writing.hpp"
+#include "operators/join_simd_sort_merge/field_accessor.hpp"
 #include "operators/join_simd_sort_merge/k_way_merge.hpp"
 #include "operators/join_simd_sort_merge/multiway_merging.hpp"
 #include "operators/join_simd_sort_merge/radix_partitioning.hpp"
@@ -14,6 +15,7 @@
 #include "operators/join_simd_sort_merge/smj_column_materializer.hpp"
 // #include "operators/join_sort_merge/column_materializer.hpp"
 #include "operators/multi_predicate_join/multi_predicate_join_evaluator.hpp"
+#include "scheduler/immediate_execution_scheduler.hpp"
 #include "utils/timer.hpp"
 #include "xxhash32.hpp"
 
@@ -151,7 +153,8 @@ std::shared_ptr<const Table> JoinSimdSortMerge::_on_execute() {
     using ColumnDataType = typename decltype(type)::type;
     _impl = std::make_unique<JoinSimdSortMergeImpl<ColumnDataType>>(
         *this, left_input_table_ptr, right_input_table_ptr, _primary_predicate.column_ids.first,
-        _primary_predicate.column_ids.second, _primary_predicate.predicate_condition, _mode, _secondary_predicates,
+        _primary_predicate.column_ids.second, _primary_predicate.predicate_condition, _mode, _primary_predicate,
+        _secondary_predicates,
         dynamic_cast<OperatorPerformanceData<JoinSimdSortMerge::OperatorSteps>&>(*performance_data));
   });
 
@@ -173,6 +176,7 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
   JoinSimdSortMergeImpl(JoinSimdSortMerge& sort_merge_join, const std::shared_ptr<const Table>& left_input_table,
                         const std::shared_ptr<const Table>& right_input_table, ColumnID left_column_id,
                         ColumnID right_column_id, const PredicateCondition op, JoinMode mode,
+                        const OperatorJoinPredicate& primary_join_predicate,
                         const std::vector<OperatorJoinPredicate>& secondary_join_predicates,
                         OperatorPerformanceData<JoinSimdSortMerge::OperatorSteps>& performance_data)
       : _sort_merge_join{sort_merge_join},
@@ -184,7 +188,12 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
         _primary_predicate_condition{op},
         _mode{mode},
         _num_cpus{Hyrise::get().topology.num_cpus()},
+        _primary_join_predicate{primary_join_predicate},
         _secondary_join_predicates{secondary_join_predicates} {
+    constexpr auto THRESHOLD = SYSTEM_L2_CACHE_SIZE / (2 * sizeof(SimdElement));
+    if (left_input_table->row_count() < THRESHOLD || right_input_table->row_count() < THRESHOLD) {
+      _cluster_count = 1;
+    }
     _output_pos_lists_left.resize(_cluster_count);
     _output_pos_lists_right.resize(_cluster_count);
   }
@@ -222,6 +231,7 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
   std::vector<SimdElementList> _sorted_per_hash_left;
   std::vector<SimdElementList> _sorted_per_hash_right;
 
+  const OperatorJoinPredicate& _primary_join_predicate;
   const std::vector<OperatorJoinPredicate>& _secondary_join_predicates;
 
   // Contains the output row ids for each cluster.
@@ -901,19 +911,10 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
   }
 
   template <typename SortingType, OperatorSteps partition_step, OperatorSteps sort_buckets_step>
-  std::vector<SimdElementList> _sort_relation(MaterializedSegmentList<ColumnType>& materialized_segments,
-                                              auto&& pack_row_id) {
-    auto timer = Timer{};
-    constexpr auto MIN_PARTITION_ELEMENTS = 1048576;
-
-    auto element_count = std::accumulate(materialized_segments.begin(), materialized_segments.end(), size_t{0},
-                                         [](size_t sum, auto& segment) {
-                                           return std::move(sum) + segment.size();
-                                         });
-
-    const auto chunk_count = (element_count <= MIN_PARTITION_ELEMENTS) ? 1 : _num_cpus;
+  std::vector<SimdElementList> _sort_with_partition_or_merge(MaterializedSegmentList<ColumnType>& materialized_segments,
+                                                             size_t chunk_count, size_t element_count,
+                                                             auto&& transform_to_simd_element, Timer& timer) {
     auto chunks = std::move(_split_vector_into_spans(materialized_segments, element_count, chunk_count));
-
     auto partition_storage = std::vector<SimdElementList>(chunk_count);
     auto working_memory = std::vector<SimdElementList>(chunk_count);
 
@@ -944,11 +945,6 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
 
     auto chunk_partitions = std::vector<RadixPartition<ColumnType>>{};
     chunk_partitions.reserve(chunk_count);
-
-    auto transform_to_simd_element = [&](MaterializedValue<ColumnType>& value) {
-      const auto sorting_key = Data32BitCompression<ColumnType>::compress(value.value, _min_value, _max_value);
-      return SimdElement{pack_row_id(value.row_id), sorting_key};
-    };
 
     auto partition_and_sort_chunk = [&](size_t chunk_index) {
       // First, we partition the chunk
@@ -1013,6 +1009,62 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
     return sorted_clusters;
   }
 
+  template <typename SortingType, OperatorSteps partition_step, OperatorSteps sort_buckets_step>
+  std::vector<SimdElementList> _sort_without_partition_or_merge(
+      MaterializedSegmentList<ColumnType>& materialized_segments, size_t element_count,
+      auto&& transform_to_simd_element, Timer& timer) {
+    auto input_storage = std::vector<SimdElementList>(1);
+    input_storage[0].resize(element_count);
+    auto working_memory = std::vector<SimdElementList>(1);
+    working_memory[0].resize(element_count);
+
+    auto* output = input_storage[0].data();
+    for (auto& segment : materialized_segments) {
+      for (auto& value : segment) {
+        *output = transform_to_simd_element(value);
+        ++output;
+      }
+    }
+    _performance.set_step_runtime(partition_step, timer.lap());
+
+    const auto count_per_vector = choose_count_per_vector();
+    auto* input_pointer = reinterpret_cast<SortingType*>(input_storage[0].data());
+    auto* output_pointer = reinterpret_cast<SortingType*>(working_memory[0].data());
+    simd_sort::sort<count_per_vector, SortingType, ExecutionStrategy::SEQUENTIAL>(input_pointer, output_pointer,
+                                                                                  element_count);
+    _performance.set_step_runtime(sort_buckets_step, timer.lap());
+    if (input_storage[0].data() == reinterpret_cast<SimdElement*>(output_pointer)) {
+      return input_storage;
+    }
+    return working_memory;
+  }
+
+  template <typename SortingType, OperatorSteps partition_step, OperatorSteps sort_buckets_step>
+  std::vector<SimdElementList> _sort_relation(MaterializedSegmentList<ColumnType>& materialized_segments,
+                                              auto&& pack_row_id) {
+    auto timer = Timer{};
+    constexpr auto MIN_PARTITION_ELEMENTS = 1048576;
+
+    auto element_count = std::accumulate(materialized_segments.begin(), materialized_segments.end(), size_t{0},
+                                         [](size_t sum, auto& segment) {
+                                           return std::move(sum) + segment.size();
+                                         });
+
+    const auto chunk_count = (element_count <= MIN_PARTITION_ELEMENTS) ? 1 : _num_cpus;
+
+    auto transform_to_simd_element = [&](MaterializedValue<ColumnType>& value) {
+      const auto sorting_key = Data32BitCompression<ColumnType>::compress(value.value, _min_value, _max_value);
+      return SimdElement{pack_row_id(value.row_id), sorting_key};
+    };
+
+    if (_cluster_count > 1 || chunk_count > 1) {
+      return std::move(_sort_with_partition_or_merge<SortingType, partition_step, sort_buckets_step>(
+          materialized_segments, chunk_count, element_count, transform_to_simd_element, timer));
+    }
+    return std::move(_sort_without_partition_or_merge<SortingType, partition_step, sort_buckets_step>(
+        materialized_segments, element_count, transform_to_simd_element, timer));
+  }
+
   template <typename T, JoinSimdSortMerge::OperatorSteps materialize_step>
   std::pair<T, T> _materialize_column(const std::shared_ptr<const Table> table, const ColumnID column_id,
                                       MaterializedSegmentList<T>& materialized_segment_list, RowIDPosList& null_values,
@@ -1067,24 +1119,28 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
     return elements;
   }
 
-  void _materialize_values(const std::span<SimdElement> sorted_elements,
-                           MaterializedSegmentList<ColumnType>& materialized_segments,
+  void _materialize_values(const std::shared_ptr<const Table>& table, const ColumnID column_id,
+                           const std::span<SimdElement> sorted_elements,
                            simd_sort::simd_vector<ColumnType>& output_values, auto&& unpack_row_id) {
     if constexpr (IS_LOSSLESS_COMPRESSION) {
       return;
     }
+    auto field_accessor = FieldAccessor<ColumnType>(*table, column_id);
 
     const auto num_elements = sorted_elements.size();
     output_values.resize(num_elements);
 
     for (auto i = size_t{0}; i < num_elements; ++i) {
-      auto row_id = unpack_row_id(sorted_elements[i].index);
-      output_values[i] = materialized_segments[row_id.chunk_id][row_id.chunk_offset].value;
+      const auto row_id = unpack_row_id(sorted_elements[i].index);
+      const auto& value = field_accessor.value(row_id);
+      if (value) {
+        output_values[i] = value.value();
+      }
     }
   }
 
-  void _gather_values_according_to_sorted_simd_data(std::vector<SimdElementList>& sorted_elements_per_hash,
-                                                    MaterializedSegmentList<ColumnType>& materialized_segments,
+  void _gather_values_according_to_sorted_simd_data(const std::shared_ptr<const Table>& table, const ColumnID column_id,
+                                                    std::vector<SimdElementList>& sorted_elements_per_hash,
                                                     std::vector<simd_sort::simd_vector<ColumnType>>& sorted_values,
                                                     auto&& unpack_row_id) {
     auto total_size = sorted_elements_per_hash.size();
@@ -1100,12 +1156,12 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
       const auto element_count = sorted_elements_per_hash[cluster_index].size();
       if (element_count > JOB_SPAWN_THRESHOLD) {
         jobs.push_back(std::make_shared<JobTask>([&, this, cluster_index]() {
-          _materialize_values(sorted_elements_per_hash[cluster_index], materialized_segments,
-                              sorted_values[cluster_index], unpack_row_id);
+          _materialize_values(table, column_id, sorted_elements_per_hash[cluster_index], sorted_values[cluster_index],
+                              unpack_row_id);
         }));
       } else {
-        _materialize_values(sorted_elements_per_hash[cluster_index], materialized_segments,
-                            sorted_values[cluster_index], unpack_row_id);
+        _materialize_values(table, column_id, sorted_elements_per_hash[cluster_index], sorted_values[cluster_index],
+                            unpack_row_id);
       }
     }
 
@@ -1174,15 +1230,23 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
   std::shared_ptr<const Table> _on_execute() override {
     if constexpr (HYRISE_DEBUG) {
       std::cout << "Execute JoinSimdSortMerge: L2-Cache = " << L2_SIZE << '\n';
-      std::cout << "float: " << std::is_same_v<ColumnType, float> << " int32: "
-                << std::is_same_v<ColumnType, int32_t> << '\n';
-      // std::cout << "double: " << std::is_same_v<ColumnType, double> << " int64: "
-      //           << std::is_same_v<ColumnType, int64_t> << '\n';
-      // std::cout << "string: " << std::is_same_v<ColumnType, pmr_string> << '\n';
-      // std::cout << "type size: " << sizeof(ColumnType) << "mode: " << _mode << '\n';
-      Assert(sizeof(ColumnType) == 4, "Column type was not size 4");
-      std::cout << "secondary_join_predicates: " << _secondary_join_predicates.size() << std::endl;
-      // std::cout << _left_input_table->row_count() << " " << _right_input_table->row_count() << std::endl;
+      std::cout << "float: " << std::is_same_v<ColumnType, float> << ", int32: " << std::is_same_v<ColumnType, int32_t>;
+      std::cout << ", double: " << std::is_same_v<ColumnType, double> << " int64: "
+                << std::is_same_v<ColumnType, int64_t>;
+      std::cout << ", string: " << std::is_same_v<ColumnType, pmr_string> << '\n';
+      std::cout << "mode: " << _mode << '\n';
+
+      if (sizeof(ColumnType) != 4) {
+        PerformanceWarning("Build side larger than probe side in hash join");
+      }
+
+      std::cout << "secondary_join_predicates: " << _secondary_join_predicates.size() << '\n';
+      std::cout << "Hyrise multi-threaded: " << Hyrise::get().is_multi_threaded() << '\n';
+      std::cout << "Hyrise scheduler: "
+                << (std::dynamic_pointer_cast<ImmediateExecutionScheduler>(Hyrise::get().scheduler()) != nullptr
+                        ? "ImmediateExecutionScheduler"
+                        : "NodeQueueScheduler")
+                << '\n';
     }
 
     auto output_column_order =
@@ -1221,10 +1285,10 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
 
     auto timer = Timer{};
 
-    _gather_values_according_to_sorted_simd_data(_sorted_per_hash_left, materialized_segments_left, _sorted_values_left,
-                                                 unpack_left_row_id);
-    _gather_values_according_to_sorted_simd_data(_sorted_per_hash_right, materialized_segments_right,
-                                                 _sorted_values_right, unpack_right_row_id);
+    _gather_values_according_to_sorted_simd_data(_left_input_table, _primary_join_predicate.column_ids.first,
+                                                 _sorted_per_hash_left, _sorted_values_left, unpack_left_row_id);
+    _gather_values_according_to_sorted_simd_data(_right_input_table, _primary_join_predicate.column_ids.second,
+                                                 _sorted_per_hash_right, _sorted_values_right, unpack_right_row_id);
     _performance.set_step_runtime(GatherRowIds, timer.lap());
 
     if (_mode == JoinMode::Semi || _mode == JoinMode::AntiNullAsFalse || _mode == JoinMode::AntiNullAsTrue) {

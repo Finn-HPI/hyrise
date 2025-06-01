@@ -119,23 +119,7 @@ struct RadixPartitionBalkesen {
     // NOLINTNEXTLINE
     size_t time_histogram, time_init_buffer, time_partition_elements;
 
-    //TODO(finn): Implement partition size 1.
-    // if (_partition_size == 1) {
-    //   _partitions.resize(_partition_size);
-    //   _partiton_offsets.resize(_partition_size);
-    //
-    //   const auto cluster_size = _elements.size();
-    //   storage_memory.reserve(cluster_size);
-    //
-    //   std::ranges::copy(_elements, storage_memory.begin());
-    //
-    //   _partiton_offsets[0] = 0;
-    //   auto& bucket = _partitions[0];
-    //   bucket.data = storage_memory.data();
-    //   bucket.size = cluster_size;
-    //   _executed = true;
-    //   return;
-    // }
+    //TODO(any): Implement partition size 1.
 
     auto start_compute_histogram = std::chrono::high_resolution_clock::now();
 
@@ -215,25 +199,6 @@ struct RadixPartitionBalkesen {
   std::size_t num_partitions() const {
     return _partition_size;
   }
-
-  // Bucket& bucket(std::size_t index) {
-  //   DebugAssert(_executed, "Do not call before execute.");
-  //   DebugAssert(index >= 0 && index < num_partitions(), "Invalid partition index.");
-  //   return _partitions[index];
-  // }
-  //
-  // std::vector<Bucket>& buckets() {
-  //   DebugAssert(_executed, "Do not call before execute.");
-  //   return _partitions;
-  // }
-
-  // template <typename T>
-  // T* get_working_memory(size_t partition_index, simd_sort::simd_vector<SimdElement>& working_memory) {
-  //   DebugAssert(_executed, "Do not call before execute.");
-  //   DebugAssert(partition_index >= 0 && partition_index < num_partitions(), "Invalid partition index.");
-  //   DebugAssert(_partiton_offsets[partition_index] % 8 == 0, "Offset has to be cache_aligned.");
-  //   return reinterpret_cast<T*>(working_memory.data() + _partiton_offsets[partition_index]);
-  // }
 };
 
 }  // namespace hyrise::radix_partition

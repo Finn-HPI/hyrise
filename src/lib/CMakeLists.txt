@@ -226,6 +226,7 @@ set(
     operators/join_simd_sort_merge.cpp
     operators/join_simd_sort_merge.hpp
     operators/join_simd_sort_merge/circular_buffer.hpp
+    operators/join_simd_sort_merge/field_accessor.hpp
     operators/join_simd_sort_merge/simd_utils.hpp
     operators/join_simd_sort_merge/abstract_two_way_merge.hpp
     operators/join_simd_sort_merge/two_way_merge.hpp
