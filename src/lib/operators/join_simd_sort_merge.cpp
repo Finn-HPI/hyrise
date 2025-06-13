@@ -44,6 +44,7 @@ struct Data32BitCompression {
   }
 };
 
+// Specialization for 4-byte types (e.g., int32_t, float). Compression is a lossless bit-cast.
 template <FourByteType T>
 struct Data32BitCompression<T> {
   static uint32_t compress(T value, const T& min_value [[maybe_unused]], const T& max_value [[maybe_unused]]) {
@@ -51,6 +52,7 @@ struct Data32BitCompression<T> {
   }
 };
 
+// Specialization for double. Compression is a lossy hash, as double is 8 bytes.
 template <>
 struct Data32BitCompression<double> {
   static uint32_t compress(double& value, const double& /*min_value*/, const double& /*max_value*/) {
@@ -58,18 +60,23 @@ struct Data32BitCompression<double> {
   }
 };
 
+// Specialization for int64_t.
 template <>
 struct Data32BitCompression<int64_t> {
   static uint32_t compress(int64_t& value, const int64_t& min_value, const int64_t& max_value) {
     static constexpr auto MAX_ALLOWED_DIFFERENCE = std::numeric_limits<uint32_t>::max();
+    // If the range of values fits within a 32-bit integer, we perform lossless range compression.
+    // This improves sorting quality as the order is preserved.
     if (max_value - min_value <= MAX_ALLOWED_DIFFERENCE) {
       return Data32BitCompression<uint32_t>::compress(static_cast<uint32_t>(value - min_value), 0,
                                                       static_cast<uint32_t>(max_value - min_value));
     }
+    // If the range is too large, fall back to a lossy hash.
     return XXHash32::hash(&value, sizeof(double), 0);
   }
 };
 
+// Specialization for pmr_string. Compression is always a lossy hash of the string content.
 template <>
 struct Data32BitCompression<hyrise::pmr_string> {
   static uint32_t compress(hyrise::pmr_string& value, const hyrise::pmr_string& min_value [[maybe_unused]],
@@ -78,10 +85,11 @@ struct Data32BitCompression<hyrise::pmr_string> {
   }
 };
 
+// Determines the optimal SIMD vector size based on the available instruction set.
 constexpr std::size_t choose_count_per_vector() {
 #if defined(__AVX512F__)
-  return 8;
-#else  // We choose a Clang vector size of four for AVX2 (native 256-bit SIMD) and VSX, NEON, etc. (128-bit SIMD).
+  return 8;  // Use 8-wide vectors for AVX512 (512-bit registers)
+#else        // We choose a Clang vector size of four for AVX2 (native 256-bit SIMD) and VSX, NEON, etc. (128-bit SIMD).
   return 4;
 #endif
 }
@@ -156,6 +164,7 @@ const std::string& JoinSimdSortMerge::name() const {
   return name;
 }
 
+// Templated implementation of the SIMD Sort-Merge Join.
 template <typename ColumnType>
 class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperatorImpl {
  public:
@@ -177,7 +186,8 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
         _primary_join_predicate{primary_join_predicate},
         _secondary_join_predicates{secondary_join_predicates} {
     constexpr auto THRESHOLD = SYSTEM_L2_CACHE_SIZE / (2 * sizeof(SimdElement));
-    // If both input relations can be sorted using a single in-cache sort, we do not partition.
+    // If both input relations are small enough to be sorted in-cache, we disable radix partitioning
+    // by setting the cluster count to 1. This avoids the overhead of partitioning.
     if (left_input_table->row_count() <= THRESHOLD && right_input_table->row_count() <= THRESHOLD) {
       _cluster_count = 1;
     }
@@ -202,26 +212,32 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
   size_t _num_cpus;
   size_t _cluster_count{CLUSTER_COUNT};  // Default of 256 buckets.
 
+  // For lossy compressed types, we need to store the original values after sorting
+  // to resolve hash collisions during the merge phase.
   std::vector<simd_sort::simd_vector<ColumnType>> _sorted_values_left;
   std::vector<simd_sort::simd_vector<ColumnType>> _sorted_values_right;
 
+  // Number of bits required for the chunk_offset part of a RowID. Used for packing/unpacking.
   uint32_t _chunk_offset_bits_left{};
   uint32_t _chunk_offset_bits_right{};
 
-  // Contains the null value row ids if a join column is an outer join column.
+  // Stores RowIDs of rows with NULL in the join column for outer joins.
   RowIDPosList _null_rows_left;
   RowIDPosList _null_rows_right;
 
+  // Min and max values of the materialized columns, used for potential range compression.
   ColumnType _min_value;
   ColumnType _max_value;
 
+  // The primary data structures holding the sorted data. Each element in the outer vector
+  // represents a partition bucket. Inside, SimdElementList contains the sorted data for that bucket.
   std::vector<SimdElementList> _sorted_per_hash_left;
   std::vector<SimdElementList> _sorted_per_hash_right;
 
   const OperatorJoinPredicate& _primary_join_predicate;
   const std::vector<OperatorJoinPredicate>& _secondary_join_predicates;
 
-  // Contains the output row ids for each cluster.
+  // Final output RowID pairs.
   std::vector<RowIDPosList> _output_pos_lists_left;
   std::vector<RowIDPosList> _output_pos_lists_right;
 
@@ -242,26 +258,12 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
 
   using RowHashSet = boost::unordered_flat_set<RowID, RowHasher>;
 
-  // Determines the number of clusters to be used for the join. The number of clusters must be a power of two.
-  size_t _determine_number_of_clusters() {
-    // We try to have a partition size of roughly 256 KB to limit out-of-cache sorting and increase parallelism. This
-    // value has been determined by an array of benchmarks and should be revisited for larger changes to the operator.
-    // Ideally, it would incorporate hardware knowledge such as the actual L2 cache size of the current system.
-    constexpr auto MAX_SORT_ITEMS_COUNT = 1'048'576;  // 4'194'304;
-    const size_t cluster_count_left = _sort_merge_join.left_input_table()->row_count() / MAX_SORT_ITEMS_COUNT;
-    const size_t cluster_count_right = _sort_merge_join.right_input_table()->row_count() / MAX_SORT_ITEMS_COUNT;
-
-    // Return the next smaller power of two for the larger of the two cluster counts. Do not use more than 2^8 clusters
-    // as TLB misses during clustering become too expensive (see "An Experimental Comparison of Thirteen Relational
-    // Equi-Joins in Main Memory" by Schuh et al.).
-    return static_cast<size_t>(std::pow(
-        2, std::min(8.0, std::floor(std::log2(std::max({size_t{1}, cluster_count_left, cluster_count_right}))))));
-  }
-
+  // Packs a RowID (chunk_id, chunk_offset) into a single 32-bit integer.
   static uint32_t __attribute__((always_inline)) _pack_row_id(RowID& row_id, uint32_t chunk_offset_bits) {
     return (row_id.chunk_id << chunk_offset_bits) | row_id.chunk_offset;
   }
 
+  // Unpacks a 32-bit integer back into a RowID.
   static RowID _unpack_row_id(uint32_t packed_row_id, uint32_t chunk_offset_bits) {
     uint32_t chunk_offset_mask = (1u << chunk_offset_bits) - 1;
     auto chunk_offset = static_cast<ChunkOffset>(packed_row_id & chunk_offset_mask);
@@ -269,6 +271,8 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
     return {chunk_id, chunk_offset};
   }
 
+  // A helper struct representing a key range of elements that have the same join key value.
+  // This is used during the merge phase to handle groups of matching rows.
   struct PotentialMatchRange {
     PotentialMatchRange(std::size_t init_start_index, std::size_t init_end_index, std::span<SimdElement> init_elements,
                         std::span<ColumnType> init_values, uint32_t init_chunk_offset_bits)
@@ -309,7 +313,6 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
           });
         });
       } else {
-        // Handle pmr_string values.
         this->for_every_row_id([&](const RowID& left_row_id, const ColumnType& value_left) {
           other_range.for_every_row_id([&](const RowID& right_row_id, const ColumnType& value_right) {
             if (value_left != value_right) {
@@ -322,10 +325,12 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
     }
   };
 
+  // Helper to treat the 32-bit key according to the sorted order of SortingType.
   static SortingType _compare_value(uint32_t key) {
     return std::bit_cast<SortingType>(static_cast<uint64_t>(key) << 32u);
   }
 
+  // Applies exponential search to find the size of a key range in the sorted elemetns, starting from `start_index`.
   std::size_t _equal_value_range_size(std::size_t start_index, std::span<SimdElement>& elements) {
     if (start_index >= elements.size()) {
       return 0;
@@ -375,6 +380,7 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
     return std::distance(begin, binary_search_result);
   }
 
+  // Adds a pair of matching RowIDs to the output lists
   void _emit_combination(std::size_t bucket_index, RowID left_row_id, RowID right_row_id) {
     _output_pos_lists_left[bucket_index].push_back(left_row_id);
     _output_pos_lists_right[bucket_index].push_back(right_row_id);
@@ -552,6 +558,7 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
     }
   }
 
+  // Specialized emit function for Semi-Joins. It emits a left row at most once.
   void _emit_qualified_combination(
       const std::size_t bucket_index, const PotentialMatchRange& left_range, const PotentialMatchRange& right_range,
       [[maybe_unused]] std::optional<MultiPredicateJoinEvaluator>& multi_predicate_join_evaluator) {
@@ -581,6 +588,7 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
     }
   }
 
+  // Specialized emit function for Anti-Joins. It emits a left row only if no match is found.
   void _emit_qualified_combination_anti(
       const std::size_t bucket_index, const PotentialMatchRange& left_range, const PotentialMatchRange& right_range,
       [[maybe_unused]] std::optional<MultiPredicateJoinEvaluator>& multi_predicate_join_evaluator) {
@@ -626,6 +634,9 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
     });
   }
 
+  // Main logic for the merge phase of Inner and Outer joins.
+  // It takes the result of comparing the current values from the left and right key range and
+  // decides which emit action to take.
   void _find_matches_in_ranges(const PotentialMatchRange& left_range, const PotentialMatchRange& right_range,
                                const CompareResult compare_result,
                                std::optional<MultiPredicateJoinEvaluator>& multi_predicate_join_evaluator,
@@ -645,6 +656,7 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
     }
   }
 
+  // Main logic for the merge phase of Semi and Anti joins.
   void _find_single_match_in_ranges(const PotentialMatchRange& left_range, const PotentialMatchRange& right_range,
                                     const CompareResult compare_result,
                                     std::optional<MultiPredicateJoinEvaluator>& multi_predicate_join_evaluator,
@@ -1097,25 +1109,10 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
     return save_materialized_output(materialized_segments, null_rows, chunk_count, max_chunk_size, min, max);
   }
 
-  MaterializedSegment<ColumnType> _flatten(MaterializedSegmentList<ColumnType>& materialized_segments) {
-    auto total_size = std::accumulate(materialized_segments.begin(), materialized_segments.end(), size_t{0},
-                                      [](size_t sum, auto& segment) {
-                                        return std::move(sum) + segment.size();
-                                      });
-
-    auto elements = MaterializedSegment<ColumnType>{};
-    elements.reserve(total_size);
-    for (auto& segment : materialized_segments) {
-      for (auto& value : segment) {
-        elements.emplace_back(value);
-      }
-    }
-    return elements;
-  }
-
   void _materialize_values(const std::shared_ptr<const Table>& table, const ColumnID column_id,
                            const std::span<SimdElement> sorted_elements,
                            simd_sort::simd_vector<ColumnType>& output_values, auto&& unpack_row_id) {
+    // This phase can be skipped in the case of lossless key encoding.
     if constexpr (IS_LOSSLESS_COMPRESSION) {
       return;
     }
@@ -1139,7 +1136,7 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
                                                     auto&& unpack_row_id) {
     auto total_size = sorted_elements_per_hash.size();
     sorted_values.resize(total_size);
-
+    // This phase can be skipped in the case of lossless key encoding.
     if constexpr (IS_LOSSLESS_COMPRESSION) {
       return;
     }
@@ -1222,6 +1219,30 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
   }
 
   std::shared_ptr<const Table> _on_execute() override {
+    /**
+     * Overview of SIMD sort-merge join operators:
+     * =========================
+     *
+     * Left Table                                       Right Table
+     * |                                                |
+     * materialize_column()                             materialize_column()
+     * (parallel over chunks, value compression,           (parallel over chunks, value compression,
+     * RowID packing, optional Bloom Filter)               RowID packing, optional Bloom Filter)
+     * |                                                |
+     * _sort_relation()                                  _sort_relation()
+     * - (Parallel Radix Partitioning into buckets)      - (Parallel Radix Partitioning into buckets)
+     * - (Parallel SIMD Sort within each buckets)        - (Parallel SIMD Sort within each buckets)
+     * - (Parallel Multi-Way Merge of sorted buckets)    - (Parallel Multi-Way Merge of sorted buckets)
+     * \                                              /
+     * \                                            /
+     * \                                          /
+     * _perform_join() (Merge Phase)
+     * (Parallel over each sorted bucket pair)
+     * |
+     * _build_output_table()
+     *
+     */
+
     if constexpr (HYRISE_DEBUG) {
       std::cout << "Execute JoinSimdSortMerge: L2-Cache = " << L2_SIZE << '\n';
       std::cout << "float: " << std::is_same_v<ColumnType, float> << ", int32: " << std::is_same_v<ColumnType, int32_t>;
