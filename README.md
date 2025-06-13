@@ -28,7 +28,7 @@ The core SIMD sorting logic resides in `src/lib/operators/join_simd_sort_merge/`
 
 The specialized merging algorithms are implemented in the following files:
 
--   **Multi-way Merging**: `src/lib/operators/join_simd_sort_merge/multiway_merging.hpp`
+-   **Multiway Merging**: `src/lib/operators/join_simd_sort_merge/multiway_merging.hpp`
 -   **Merge Path**: `src/lib/operators/join_simd_sort_merge/merge_path.hpp`
 
 ---
