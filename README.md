@@ -48,6 +48,67 @@ The main operator logic is implemented in `src/lib/operators/join_simd_sort_merg
 >
 > To test or benchmark a different join implementation (e.g., `JoinHash`), you must modify this order to place your desired operator first.
 
+## Compilation
+
+To build the project, you must configure `cmake` with the appropriate build flags for your target SIMD instruction set.
+
+Below are the commands for different architectures. Click on the one that matches your hardware to expand the full command.
+
+<details>
+<summary><b>For x86 with AVX2</b></summary>
+To compile for processors supporting AVX2, use the following command:
+
+```bash
+cmake -DCMAKE_C_COMPILER=/usr/bin/clang \
+      -DCMAKE_CXX_COMPILER=/usr/bin/clang++ \
+      -GNinja \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_CXX_FLAGS="-mmmx -msse -msse2 -msse3 -mssse3 -msse4 -msse4a -msse4.1 -msse4.2 -mavx -mavx2 -Wno-switch-default -Wno-error=switch-default -std=c++20 -Wno-psabi -Wno-c++20-compat -Wno-deprecated-declarations" \
+      ..
+````
+</details>
+
+<details>
+<summary><b>For x86 with AVX-512</b></summary>
+To compile for processors supporting AVX-512, use the following command:
+
+```bash
+cmake -DCMAKE_C_COMPILER=/usr/bin/clang \
+      -DCMAKE_CXX_COMPILER=/usr/bin/clang++ \
+      -GNinja \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_CXX_FLAGS="-mmmx -msse -msse2 -msse3 -mssse3 -msse4 -msse4a -msse4.1 -msse4.2 -mavx -mavx2 -mavx512f -mavx512cd -mavx512vl -mavx512bw -mavx512dq -mavx512vnni -Wno-switch-default -Wno-error=switch-default -std=c++20 -Wno-psabi -Wno-c++20-compat -Wno-deprecated-declarations -Wno-cast-align -Wno-implicit-int-float-conversion" \
+      ..
+```
+
+</details>
+<details>
+<summary><b>For ARM with SVE2</b></summary>
+To compile for ARM processors supporting NEON/SVE/SVE2 (e.g., ARM Neoverse V2), use the following command:
+
+```bash
+cmake -DCMAKE_C_COMPILER=/usr/bin/clang \
+      -DCMAKE_CXX_COMPILER=/usr/bin/clang++ \
+      -GNinja \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_CXX_FLAGS="-march=armv9-a+sve2 -Wno-switch-default -Wno-error=switch-default -std=c++20 -Wno-psabi -Wno-c++20-compat -Wno-deprecated-declarations -Wno-cast-align -Wno-implicit-int-float-conversion" \
+      ..
+```
+</details>
+<details>
+<summary><b>For PowerPC with VSX</b></summary>
+ To compile for PowerPC processors supporting VSX (e.g., Power10), use the following command:
+
+```bash
+cmake -DCMAKE_C_COMPILER=/usr/bin/clang \
+      -DCMAKE_CXX_COMPILER=/usr/bin/clang++ \
+      -GNinja \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_CXX_FLAGS="-mcpu=power10 -mvsx -Wno-switch-default -Wno-error=switch-default -std=c++20 -Wno-psabi -Wno-c++20-compat -Wno-deprecated-declarations -Wno-cast-align -Wno-implicit-int-float-conversion" \
+      ..
+```
+</details>
+
 ---
 
 [![Build Status](https://hyrise-ci.epic-hpi.de/buildStatus/icon?job=Hyrise/hyrise/master)](https://hyrise-ci.epic-hpi.de/blue/organizations/jenkins/hyrise%2Fhyrise/activity/)
