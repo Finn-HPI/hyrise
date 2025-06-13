@@ -1,6 +1,10 @@
-# Master Thesis: Hardware-Conscious SIMD-Accelerated Sort-Merge Joins
+# Master Thesis: Hardware-Conscious SIMD-Accelerated Sort-Merge Joins in Multi Core In-Memory Database Systems
 
 This project implements a **SIMD Sort-Merge Join (SSMJ)** operator and integrates it into the Hyrise in-memory database system.
+
+> **Plotting Scripts**
+> The scripts and data used to generate the plots displayed in the thesis can be found in the following repository: [master-thesis-plotting-scripts](https://github.com/Finn-HPI/master-thesis-plotting-scripts).
+
 
 ## Implementation Details
 
@@ -47,6 +51,8 @@ The main operator logic is implemented in `src/lib/operators/join_simd_sort_merg
 > ```
 >
 > To test or benchmark a different join implementation (e.g., `JoinHash`), you must modify this order to place your desired operator first.
+
+---
 
 ## Compilation
 
