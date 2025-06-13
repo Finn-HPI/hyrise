@@ -84,13 +84,12 @@ std::shared_ptr<Table> SyntheticTableGenerator::generate_table(
   }
   auto table = std::make_shared<Table>(column_definitions, TableType::Data, chunk_size, use_mvcc);
 
+  int32_t key = 0;
   for (auto chunk_index = ChunkOffset{0}; chunk_index < num_chunks; ++chunk_index) {
     auto jobs = std::vector<std::shared_ptr<AbstractTask>>{};
     jobs.reserve(static_cast<size_t>(num_chunks));
 
     auto segments = Segments(num_columns);
-
-    int32_t key = 0;
 
     for (auto column_index = ColumnID{0}; column_index < num_columns; ++column_index) {
       jobs.emplace_back(std::make_shared<JobTask>([&, column_index, key]() {
@@ -201,8 +200,8 @@ std::shared_ptr<Table> SyntheticTableGenerator::generate_table(
         });
       }));
       jobs.back()->schedule();
+      key += static_cast<int>(chunk_size);
     }
-    key += static_cast<int>(chunk_size);
     Hyrise::get().scheduler()->wait_for_tasks(jobs);
 
     if (use_mvcc == UseMvcc::Yes) {

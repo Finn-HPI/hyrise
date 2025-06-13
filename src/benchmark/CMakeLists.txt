@@ -71,6 +71,44 @@ target_link_libraries(
     hyriseBenchmarkLib
 )
 
+add_executable(
+  hyriseBenchmarkMwayKwayComparison
+  benchmark_mway_kway_comparison.cpp
+)
+
+target_link_libraries(
+    hyriseBenchmarkMwayKwayComparison
+    PRIVATE
+
+    hyrise
+    hyriseBenchmarkLib
+)
+
+add_executable(
+  hyriseBenchmarkJoinPhase
+  benchmark_join_phase.cpp
+)
+
+target_link_libraries(
+    hyriseBenchmarkJoinPhase
+    PRIVATE
+
+    hyrise
+    hyriseBenchmarkLib
+)
+
+target_link_libraries_system(
+    hyriseBenchmarkMwayKwayComparison
+
+    benchmark::benchmark
+)
+
+target_link_libraries_system(
+    hyriseBenchmarkJoinPhase
+
+    benchmark::benchmark
+)
+
 # Ignore -Wshift-sign-overflow of google benchmark introduced with
 # https://github.com/google/benchmark/commit/926f61da9ac8d0100eb75a5246b45484cc9c94b7
 target_link_libraries_system(

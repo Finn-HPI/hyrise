@@ -72,8 +72,8 @@ inline SortingType __attribute__((always_inline)) compare_value(uint32_t key) {
   return (value + radix_partition::TUPLES_PER_CACHELINE - 1) & ~(radix_partition::TUPLES_PER_CACHELINE - 1);
 }
 
-[[maybe_unused]] std::pair<std::size_t, std::size_t> equal_value_range_size_binary_search(
-    std::size_t start_index, std::span<SimdElement>& elements) {
+[[maybe_unused]] std::pair<std::size_t, std::size_t> binary_search(std::size_t start_index,
+                                                                   std::span<SimdElement>& elements) {
   if (start_index >= elements.size()) {
     return {0, 0};
   }
@@ -95,8 +95,8 @@ inline SortingType __attribute__((always_inline)) compare_value(uint32_t key) {
 }
 
 template <size_t search_items>
-[[maybe_unused]] std::pair<std::size_t, std::size_t> equal_value_range_size(std::size_t start_index,
-                                                                            std::span<SimdElement>& elements) {
+[[maybe_unused]] std::pair<std::size_t, std::size_t> hybrid_linear_binary_search(std::size_t start_index,
+                                                                                 std::span<SimdElement>& elements) {
   if (start_index >= elements.size()) {
     return {0, 0};
   }
@@ -138,8 +138,8 @@ template <size_t search_items>
   return {std::distance(begin, binary_search_result), comparisons};
 }
 
-[[maybe_unused]] std::pair<std::size_t, std::size_t> equal_value_range_size_experimental_search(
-    std::size_t start_index, std::span<SimdElement>& elements) {
+[[maybe_unused]] std::pair<std::size_t, std::size_t> exponential_search(std::size_t start_index,
+                                                                        std::span<SimdElement>& elements) {
   if (start_index >= elements.size()) {
     return {0, 0};
   }
@@ -152,7 +152,7 @@ template <size_t search_items>
   auto next = begin;
   std::ranges::advance(next, 1, end);
 
-  if (compare_value(next->key) > run_value) {
+  if (next == end || compare_value(next->key) > run_value) {
     return {1, 1};
   }
 
@@ -207,31 +207,31 @@ std::pair<size_t, size_t> join(std::span<SimdElement> left_elements, std::span<S
   auto advance = [&](size_t start, std::span<SimdElement> elements) {
     using enum KeyRangeAlgo;
     if constexpr (algo_type == LinBin8) {
-      auto [dist, cmp] = equal_value_range_size<8>(start, elements);
+      auto [dist, cmp] = hybrid_linear_binary_search<8>(start, elements);
       comparisons += cmp;
       return dist;
     }
     if constexpr (algo_type == LinBin64) {
-      auto [dist, cmp] = equal_value_range_size<64>(start, elements);
+      auto [dist, cmp] = hybrid_linear_binary_search<64>(start, elements);
 
       comparisons += cmp;
       return dist;
     }
 
     if constexpr (algo_type == LinBin128) {
-      auto [dist, cmp] = equal_value_range_size<128>(start, elements);
+      auto [dist, cmp] = hybrid_linear_binary_search<128>(start, elements);
       comparisons += cmp;
       return dist;
     }
 
     if constexpr (algo_type == Bin) {
-      auto [dist, cmp] = equal_value_range_size_binary_search(start, elements);
+      auto [dist, cmp] = binary_search(start, elements);
       comparisons += cmp;
 
       return dist;
     }
     if constexpr (algo_type == Exp) {
-      auto [dist, cmp] = equal_value_range_size_experimental_search(start, elements);
+      auto [dist, cmp] = exponential_search(start, elements);
       comparisons += cmp;
       return dist;
     }
@@ -292,9 +292,6 @@ std::pair<size_t, size_t> join(std::span<SimdElement> left_elements, std::span<S
 void generate_data(simd_sort::simd_vector<SimdElement>& relation_r, simd_sort::simd_vector<SimdElement>& relation_s,
                    size_t size_r, size_t size_s, [[maybe_unused]] double overlap, [[maybe_unused]] std::mt19937& rng,
                    [[maybe_unused]] double skew, [[maybe_unused]] size_t range_size) {
-  // std::uniform_int_distribution<uint32_t> dist(0, size_r-1);
-  // auto dist = zipfian_int_distribution<uint32_t>(0, size_r - 1, skew);
-
   relation_r.clear();
   relation_r.reserve(size_r);
   auto key = uint32_t{0};
@@ -312,6 +309,9 @@ void generate_data(simd_sort::simd_vector<SimdElement>& relation_r, simd_sort::s
       ++key;
     }
   }
+
+  // auto dist = std::uniform_int_distribution<uint32_t>(0, size_r - 1);
+  // auto dist = zipfian_int_distribution<uint32_t>(0, size_r - 1, skew);
 
   // relation_r.clear();
   // relation_r.reserve(size_r);

@@ -1,283 +1,100 @@
-#include <benchmark/benchmark.h>
+#include <memory>
 
-#include <fstream>
-#include <iostream>
-#include <iterator>
-#include <random>
-#include <span>
-#include <zipfian_int_distribution.hpp>
+#include "benchmark/benchmark.h"
 
-#include <boost/sort/pdqsort/pdqsort.hpp>
+#include "micro_benchmark_basic_fixture.hpp"
 
-#include "operators/join_simd_sort_merge/k_way_merge.hpp"
-#include "operators/join_simd_sort_merge/multiway_merging.hpp"
-#include "operators/join_simd_sort_merge/multiway_merging_balkesen.hpp"
-#include "operators/join_simd_sort_merge/radix_partitioning.hpp"
-#include "operators/join_simd_sort_merge/simd_utils.hpp"
-#include "operators/join_simd_sort_merge/util.hpp"
-#include "types.hpp"
+namespace hyrise {
 
-using namespace hyrise;  // NOLINT(build/namespaces)
+/**
+ * Welcome to the benchmark playground. Here, you can quickly compare two
+ * approaches in a minimal setup. Of course you can also use it to just benchmark
+ * one single thing.
+ *
+ * In this example, a minimal TableScan-like operation is used to evaluate the
+ * performance impact of pre-allocating the result vector (PosList in hyrise).
+ *
+ * A few tips:
+ * * The optimizer is not your friend. If you do a bunch of calculations and
+ *   don't actually use the result, it will optimize your code out and you will
+ *   benchmark only noise.
+ * * benchmark::DoNotOptimize(<expression>); marks <expression> as "globally
+ *   aliased", meaning that the compiler has to assume that any operation that
+ *   *could* access this memory location will do so.
+ *   However, despite the name, this will not prevent the compiler from
+ *   optimizing this expression itself!
+ * * benchmark::ClobberMemory(); can be used to force calculations to be written
+ *   to memory. It acts as a memory barrier. In combination with DoNotOptimize(e),
+ *   this function effectively declares that it could touch any part of memory,
+ *   in particular globally aliased memory.
+ * * More information on that: https://stackoverflow.com/questions/40122141/
+ */
 
-using Bucket = radix_partition::Bucket;
-using SortingType = double;
+using ValueT = int32_t;
 
-namespace {
-[[maybe_unused]] constexpr std::size_t choose_count_per_vector() {
-#if defined(__AVX512F__)
-  return 8;
-#else
-  return 4;
-#endif
-}
+class BenchmarkPlaygroundFixture : public MicroBenchmarkBasicFixture {
+ public:
+  void SetUp(::benchmark::State& state) override {
+    MicroBenchmarkBasicFixture::SetUp(state);
 
-[[maybe_unused]] simd_sort::simd_vector<SimdElement> generate_ordered_tuples(size_t num_tuples) {
-  constexpr uint32_t INCRMOD = 100;
-  constexpr uint32_t MAX_INT = std::numeric_limits<uint32_t>::max() - INCRMOD;
+    _clear_cache();
 
-  std::mt19937 gen(42);
-  std::uniform_int_distribution<uint32_t> dist(1, INCRMOD - 1);
-  auto result = simd_sort::simd_vector<SimdElement>(num_tuples);
-
-  uint32_t next_key = dist(gen);
-
-  for (auto index = size_t{0}; index < num_tuples; ++index) {
-    result[index].key = 0;
-    if (next_key < MAX_INT) {
-      next_key += dist(gen);
-    }
-  }
-  return result;
-}
-}  // namespace
-
-constexpr auto L3_CACHE_SIZE = size_t{1024} * 1024 * 16;
-constexpr auto L3_CACHE_PER_THREAD = L3_CACHE_SIZE / 8;
-
-// NOLINTNEXTLINE
-static void BM_MWAY_MERGE(benchmark::State& state) {
-  const auto fan_in = static_cast<size_t>(state.range(0));
-  const auto total_size = static_cast<size_t>(state.range(1));
-  const auto chunk_size = total_size / fan_in;
-  const auto cache_per_thread = static_cast<size_t>(state.range(2));
-
-  std::cout << "Fan-in=" << fan_in << ", Tuples=" << total_size << '\n';
-
-  // Warmup
-  const auto warmup_iterations = size_t{2};
-  for (auto iteration = size_t{0}; iteration < warmup_iterations; ++iteration) {
-    auto chunks = std::vector<simd_sort::simd_vector<SimdElement>>(fan_in);
-    auto buckets = std::vector<Relation>(fan_in);
-    auto sorted_bucket_ptrs = std::vector<Relation*>(fan_in);
-    for (auto chunk_id = size_t{0}; chunk_id < fan_in; ++chunk_id) {
-      chunks[chunk_id] = generate_ordered_tuples(chunk_size);
-      buckets[chunk_id].tuples = chunks[chunk_id].data();
-      buckets[chunk_id].num_tuples = chunk_size;
-      sorted_bucket_ptrs[chunk_id] = &buckets[chunk_id];
-    }
-    auto merged_output = simd_sort::simd_vector<SimdElement>(chunk_size * fan_in);
-    auto multiway_merger = multiway_merging::MultiwayMergerBalkesen<choose_count_per_vector(), SortingType>(
-        sorted_bucket_ptrs, cache_per_thread);
-    multiway_merger.merge(merged_output);
-    benchmark::DoNotOptimize(merged_output);
-    benchmark::ClobberMemory();
+    // Fill the vector with 1M values in the pattern 0, 1, 2, 3, 0, 1, 2, 3, ...
+    // The "TableScan" will scan for one value (2), so it will select 25%.
+    _vec.resize(1'000'000);
+    std::generate(_vec.begin(), _vec.end(), []() {
+      static ValueT value = 0;
+      value = (value + 1) % 4;
+      return value;
+    });
   }
 
-  // NOLINTNEXTLINE
+  void TearDown(::benchmark::State& state) override {
+    MicroBenchmarkBasicFixture::TearDown(state);
+  }
+
+ protected:
+  std::vector<ValueT> _vec;
+};
+
+/**
+ * Reference implementation, growing the vector on demand
+ */
+BENCHMARK_F(BenchmarkPlaygroundFixture, BM_Playground_Reference)(benchmark::State& state) {
+  // Add some benchmark-specific setup here
+
   for (auto _ : state) {
-    state.PauseTiming();
-    auto chunks = std::vector<simd_sort::simd_vector<SimdElement>>(fan_in);
-    auto buckets = std::vector<Relation>(fan_in);
-    auto sorted_bucket_ptrs = std::vector<Relation*>(fan_in);
-    for (auto chunk_id = size_t{0}; chunk_id < fan_in; ++chunk_id) {
-      chunks[chunk_id] = generate_ordered_tuples(chunk_size);
-      buckets[chunk_id].tuples = chunks[chunk_id].data();
-      buckets[chunk_id].num_tuples = chunk_size;
-      sorted_bucket_ptrs[chunk_id] = &buckets[chunk_id];
+    auto result = std::vector<size_t>{};
+    benchmark::DoNotOptimize(result.data());  // Do not optimize out the vector
+    const auto size = _vec.size();
+    for (auto index = size_t{0}; index < size; ++index) {
+      if (_vec[index] == 2) {
+        result.push_back(index);
+        benchmark::ClobberMemory();  // Force that record to be written to memory
+      }
     }
-    auto merged_output = simd_sort::simd_vector<SimdElement>(chunk_size * fan_in);
-    state.ResumeTiming();
-
-    auto start = std::chrono::high_resolution_clock::now();
-
-    auto multiway_merger = multiway_merging::MultiwayMergerBalkesen<choose_count_per_vector(), SortingType>(
-        sorted_bucket_ptrs, cache_per_thread);
-    multiway_merger.merge(merged_output);
-    benchmark::DoNotOptimize(merged_output);
-    benchmark::ClobberMemory();
-
-    auto end = std::chrono::high_resolution_clock::now();
-    auto elapsed_seconds = std::chrono::duration_cast<std::chrono::duration<double>>(end - start);
-
-    state.SetIterationTime(elapsed_seconds.count());
   }
-  state.counters["Fan-in"] = static_cast<double>(fan_in);
-  state.counters["Tuples"] = static_cast<double>(total_size);
 }
 
-// NOLINTNEXTLINE
-[[maybe_unused]] static void BM_KWAY_MERGE(benchmark::State& state) {
-  const auto fan_in = static_cast<size_t>(state.range(0));
-  const auto total_size = static_cast<size_t>(state.range(1));
-  const auto chunk_size = total_size / fan_in;
+/**
+ * Alternative implementation, pre-allocating the vector
+ */
+BENCHMARK_F(BenchmarkPlaygroundFixture, BM_Playground_PreAllocate)(benchmark::State& state) {
+  // Add some benchmark-specific setup here
 
-  std::cout << "Fan-in=" << fan_in << ", Tuples=" << total_size << '\n';
-
-  // Warmup
-  const auto warmup_iterations = size_t{2};
-  for (auto iteration = size_t{0}; iteration < warmup_iterations; ++iteration) {
-    auto chunks = std::vector<simd_sort::simd_vector<SimdElement>>(fan_in);
-    auto buckets = std::vector<radix_partition::Bucket>(fan_in);
-    auto sorted_bucket_ptrs = std::vector<Bucket*>(fan_in);
-    for (auto chunk_id = size_t{0}; chunk_id < fan_in; ++chunk_id) {
-      chunks[chunk_id] = generate_ordered_tuples(chunk_size);
-      buckets[chunk_id].data = chunks[chunk_id].data();
-      buckets[chunk_id].size = chunk_size;
-      sorted_bucket_ptrs[chunk_id] = &buckets[chunk_id];
-    }
-    auto merged_output = simd_sort::simd_vector<SimdElement>(chunk_size * fan_in);
-    auto kway_merger = k_way_merge::KWayMerge<SortingType>(sorted_bucket_ptrs);
-    kway_merger.merge(merged_output);
-    benchmark::DoNotOptimize(merged_output);
-    benchmark::ClobberMemory();
-  }
-
-  // NOLINTNEXTLINE
   for (auto _ : state) {
-    state.PauseTiming();
-    auto chunks = std::vector<simd_sort::simd_vector<SimdElement>>(fan_in);
-    auto buckets = std::vector<radix_partition::Bucket>(fan_in);
-    auto sorted_bucket_ptrs = std::vector<Bucket*>(fan_in);
-    for (auto chunk_id = size_t{0}; chunk_id < fan_in; ++chunk_id) {
-      chunks[chunk_id] = generate_ordered_tuples(chunk_size);
-      buckets[chunk_id].data = chunks[chunk_id].data();
-      buckets[chunk_id].size = chunk_size;
-      sorted_bucket_ptrs[chunk_id] = &buckets[chunk_id];
+    std::vector<size_t> result;
+    benchmark::DoNotOptimize(result.data());  // Do not optimize out the vector
+    // pre-allocate result vector
+    result.reserve(250'000);
+    const auto size = _vec.size();
+    for (auto index = size_t{0}; index < size; ++index) {
+      if (_vec[index] == 2) {
+        result.push_back(index);
+        benchmark::ClobberMemory();  // Force that record to be written to memory
+      }
     }
-    auto merged_output = simd_sort::simd_vector<SimdElement>(chunk_size * fan_in);
-    state.ResumeTiming();
-
-    auto start = std::chrono::high_resolution_clock::now();
-
-    auto kway_merger = k_way_merge::KWayMerge<SortingType>(sorted_bucket_ptrs);
-    kway_merger.merge(merged_output);
-    benchmark::DoNotOptimize(merged_output);
-    benchmark::ClobberMemory();
-
-    auto end = std::chrono::high_resolution_clock::now();
-    auto elapsed_seconds = std::chrono::duration_cast<std::chrono::duration<double>>(end - start);
-
-    state.SetIterationTime(elapsed_seconds.count());
   }
-  state.counters["Fan-in"] = static_cast<double>(fan_in);
-  state.counters["Tuples"] = static_cast<double>(total_size);
 }
 
-constexpr auto NUM_TUPLES = size_t{16} * 1024 * 1024;
-
-BENCHMARK(BM_MWAY_MERGE)->Args({4, NUM_TUPLES, L2_SIZE})->Unit(benchmark::kMillisecond)->Iterations(5)->UseManualTime();
-BENCHMARK(BM_MWAY_MERGE)->Args({8, NUM_TUPLES, L2_SIZE})->Unit(benchmark::kMillisecond)->Iterations(5)->UseManualTime();
-BENCHMARK(BM_MWAY_MERGE)
-    ->Args({16, NUM_TUPLES, L2_SIZE})
-    ->Unit(benchmark::kMillisecond)
-    ->Iterations(5)
-    ->UseManualTime();
-BENCHMARK(BM_MWAY_MERGE)
-    ->Args({32, NUM_TUPLES, L2_SIZE})
-    ->Unit(benchmark::kMillisecond)
-    ->Iterations(5)
-    ->UseManualTime();
-BENCHMARK(BM_MWAY_MERGE)
-    ->Args({64, NUM_TUPLES, L2_SIZE})
-    ->Unit(benchmark::kMillisecond)
-    ->Iterations(5)
-    ->UseManualTime();
-BENCHMARK(BM_MWAY_MERGE)
-    ->Args({128, NUM_TUPLES, L2_SIZE})
-    ->Unit(benchmark::kMillisecond)
-    ->Iterations(5)
-    ->UseManualTime();
-BENCHMARK(BM_MWAY_MERGE)
-    ->Args({256, NUM_TUPLES, L2_SIZE})
-    ->Unit(benchmark::kMillisecond)
-    ->Iterations(5)
-    ->UseManualTime();
-BENCHMARK(BM_MWAY_MERGE)
-    ->Args({512, NUM_TUPLES, L2_SIZE})
-    ->Unit(benchmark::kMillisecond)
-    ->Iterations(5)
-    ->UseManualTime();
-BENCHMARK(BM_MWAY_MERGE)
-    ->Args({1024, NUM_TUPLES, L2_SIZE})
-    ->Unit(benchmark::kMillisecond)
-    ->Iterations(5)
-    ->UseManualTime();
-BENCHMARK(BM_MWAY_MERGE)
-    ->Args({2048, NUM_TUPLES, L2_SIZE})
-    ->Unit(benchmark::kMillisecond)
-    ->Iterations(5)
-    ->UseManualTime();
-
-BENCHMARK(BM_MWAY_MERGE)
-    ->Args({4, NUM_TUPLES, L3_CACHE_PER_THREAD})
-    ->Unit(benchmark::kMillisecond)
-    ->Iterations(5)
-    ->UseManualTime();
-BENCHMARK(BM_MWAY_MERGE)
-    ->Args({8, NUM_TUPLES, L3_CACHE_PER_THREAD})
-    ->Unit(benchmark::kMillisecond)
-    ->Iterations(5)
-    ->UseManualTime();
-BENCHMARK(BM_MWAY_MERGE)
-    ->Args({16, NUM_TUPLES, L3_CACHE_PER_THREAD})
-    ->Unit(benchmark::kMillisecond)
-    ->Iterations(5)
-    ->UseManualTime();
-BENCHMARK(BM_MWAY_MERGE)
-    ->Args({32, NUM_TUPLES, L3_CACHE_PER_THREAD})
-    ->Unit(benchmark::kMillisecond)
-    ->Iterations(5)
-    ->UseManualTime();
-BENCHMARK(BM_MWAY_MERGE)
-    ->Args({64, NUM_TUPLES, L3_CACHE_PER_THREAD})
-    ->Unit(benchmark::kMillisecond)
-    ->Iterations(5)
-    ->UseManualTime();
-BENCHMARK(BM_MWAY_MERGE)
-    ->Args({128, NUM_TUPLES, L3_CACHE_PER_THREAD})
-    ->Unit(benchmark::kMillisecond)
-    ->Iterations(5)
-    ->UseManualTime();
-BENCHMARK(BM_MWAY_MERGE)
-    ->Args({256, NUM_TUPLES, L3_CACHE_PER_THREAD})
-    ->Unit(benchmark::kMillisecond)
-    ->Iterations(5)
-    ->UseManualTime();
-BENCHMARK(BM_MWAY_MERGE)
-    ->Args({512, NUM_TUPLES, L3_CACHE_PER_THREAD})
-    ->Unit(benchmark::kMillisecond)
-    ->Iterations(5)
-    ->UseManualTime();
-BENCHMARK(BM_MWAY_MERGE)
-    ->Args({1024, NUM_TUPLES, L3_CACHE_PER_THREAD})
-    ->Unit(benchmark::kMillisecond)
-    ->Iterations(5)
-    ->UseManualTime();
-BENCHMARK(BM_MWAY_MERGE)
-    ->Args({2048, NUM_TUPLES, L3_CACHE_PER_THREAD})
-    ->Unit(benchmark::kMillisecond)
-    ->Iterations(5)
-    ->UseManualTime();
-
-BENCHMARK(BM_KWAY_MERGE)->Args({4, NUM_TUPLES})->Unit(benchmark::kMillisecond)->Iterations(5)->UseManualTime();
-BENCHMARK(BM_KWAY_MERGE)->Args({8, NUM_TUPLES})->Unit(benchmark::kMillisecond)->Iterations(5)->UseManualTime();
-BENCHMARK(BM_KWAY_MERGE)->Args({16, NUM_TUPLES})->Unit(benchmark::kMillisecond)->Iterations(5)->UseManualTime();
-BENCHMARK(BM_KWAY_MERGE)->Args({32, NUM_TUPLES})->Unit(benchmark::kMillisecond)->Iterations(5)->UseManualTime();
-BENCHMARK(BM_KWAY_MERGE)->Args({64, NUM_TUPLES})->Unit(benchmark::kMillisecond)->Iterations(5)->UseManualTime();
-BENCHMARK(BM_KWAY_MERGE)->Args({128, NUM_TUPLES})->Unit(benchmark::kMillisecond)->Iterations(5)->UseManualTime();
-BENCHMARK(BM_KWAY_MERGE)->Args({256, NUM_TUPLES})->Unit(benchmark::kMillisecond)->Iterations(5)->UseManualTime();
-BENCHMARK(BM_KWAY_MERGE)->Args({512, NUM_TUPLES})->Unit(benchmark::kMillisecond)->Iterations(5)->UseManualTime();
-BENCHMARK(BM_KWAY_MERGE)->Args({1024, NUM_TUPLES})->Unit(benchmark::kMillisecond)->Iterations(5)->UseManualTime();
-BENCHMARK(BM_KWAY_MERGE)->Args({2048, NUM_TUPLES})->Unit(benchmark::kMillisecond)->Iterations(5)->UseManualTime();
-
-BENCHMARK_MAIN();
+}  // namespace hyrise
