@@ -14,30 +14,7 @@ target_link_libraries(
 add_executable(
     hyrisePlayground
 
-    cpu_mapping.cpp
-    partition.cpp
     playground.cpp
-)
-
-add_executable(
-    hyrisePartitionAndSort
-
-    partition_and_sort.cpp
-)
-
-add_executable(
-    hyriseSIMDMergeTest
-    simd_sort_test.cpp
-)
-
-add_executable(
-    hyriseBenchmarkSIMDMerge
-    merge_benchmark.cpp
-)
-
-add_executable(
-    hyriseBenchmarkPartitioning
-    partitioning_benchmark.cpp
 )
 
 target_link_libraries(
@@ -46,40 +23,34 @@ target_link_libraries(
     hyriseBenchmarkLib
 )
 
-target_link_libraries(
-    hyrisePartitionAndSort
-    hyrise
-    hyriseBenchmarkLib
+add_executable(
+    hyriseBalkesenComparison
+
+    balkesen_files/cpu_mapping.cpp
+    balkesen_comparison.cpp
 )
 
 target_link_libraries(
-    hyriseBenchmarkPartitioning
-    hyrise
-    hyriseBenchmarkLib
-)
-
-target_link_libraries(
-    hyriseSIMDMergeTest
-    hyrise
-    hyriseBenchmarkLib
-)
-
-target_link_libraries(
-    hyriseBenchmarkSIMDMerge
+    hyriseBalkesenComparison
     hyrise
     hyriseBenchmarkLib
 )
 
 add_executable(
-    hyriseBenchmarkSIMD
-    cxxopts.hpp
-    benchmark.cpp
+    hyriseSimdSortBench
+
+    sort_bench.cpp
 )
 
 target_link_libraries(
-    hyriseBenchmarkSIMD
+    hyriseSimdSortBench
     hyrise
     hyriseBenchmarkLib
+)
+
+target_include_directories(hyriseBalkesenComparison
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/balkesen_files
 )
 
 # Configure client
