@@ -1,3 +1,55 @@
+# Master Thesis: Hardware-Conscious SIMD-Accelerated Sort-Merge Joins
+
+This project implements a **SIMD Sort-Merge Join (SSMJ)** operator and integrates it into the Hyrise in-memory database system.
+
+## Implementation Details
+
+### SIMD Sorting
+
+The core SIMD sorting logic resides in `src/lib/operators/join_simd_sort_merge/`.
+
+-   **`simd_sort.hpp`**: Contains the main sorting routine.
+    ```cpp
+    template <std::size_t count_per_vector, typename T, ExecutionStrategy execution_strategy = ExecutionStrategy::SEQUENTIAL>
+    void sort(T*& input_ptr, T*& output_ptr, std::size_t element_count);
+    ```
+    The `ExecutionStrategy` can be one of the following:
+    -   `SEQUENTIAL`: Single-threaded execution.
+    -   `PARALLEL`: Parallel execution.
+    -   `ParallelMergeSort`: Uses the Merge Path algorithm in later merge stages for better parallelization.
+
+-   **`simd_utils.hpp`**: Provides implementations for the `SortingNetwork`.
+-   **`abstract_two_way_merging.hpp`**: Defines the abstract interface for the SIMD two-way merging algorithm with `merge_equal_length` and `merge_variable_length` routines.
+-   **`two_way_merging.hpp`**: Implements base-size bitonic merge networks for specific vector sizes.
+
+---
+
+### Merging Algorithms
+
+The specialized merging algorithms are implemented in the following files:
+
+-   **Multi-way Merging**: `src/lib/operators/join_simd_sort_merge/multiway_merging.hpp`
+-   **Merge Path**: `src/lib/operators/join_simd_sort_merge/merge_path.hpp`
+
+---
+
+### SIMD Sort-Merge Join (SSMJ) Operator
+
+The main operator logic is implemented in `src/lib/operators/join_simd_sort_merge.cpp`.
+
+> **Note on Operator Precedence**
+>
+> Hyrise selects the first join operator that supports the given query configuration. The current order of preference is defined in `lqp_translator.cpp`:
+>
+> ```cpp
+> constexpr auto JOIN_OPERATOR_PREFERENCE_ORDER =
+>       hana::to_tuple(hana::tuple_t<JoinSimdSortMerge, JoinHash, JoinSortMerge, JoinNestedLoop>);
+> ```
+>
+> To test or benchmark a different join implementation (e.g., `JoinHash`), you must modify this order to place your desired operator first.
+
+---
+
 [![Build Status](https://hyrise-ci.epic-hpi.de/buildStatus/icon?job=Hyrise/hyrise/master)](https://hyrise-ci.epic-hpi.de/blue/organizations/jenkins/hyrise%2Fhyrise/activity/)
 [![Coverage Status](https://hyrise-ci.epic-hpi.de/job/hyrise/job/hyrise/job/master/lastStableBuild/artifact/coverage_badge.svg)](https://hyrise-ci.epic-hpi.de/job/Hyrise/job/hyrise/job/master/lastStableBuild/Llvm-cov_5fReport/)
 [![CodeFactor](https://www.codefactor.io/repository/github/hyrise/hyrise/badge)](https://www.codefactor.io/repository/github/hyrise/hyrise)
