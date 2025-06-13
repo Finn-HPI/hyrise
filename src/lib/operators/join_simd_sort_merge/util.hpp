@@ -40,7 +40,7 @@ static constexpr std::size_t align_to_cacheline(std::size_t value) {
 
 constexpr auto THREAD_COUNT = 8;
 
-enum class ExecutionStrategy : std::uint8_t { SEQUENTIAL, PARALLEL, ParallelWithMergePath };
+enum class ExecutionStrategy : std::uint8_t { SEQUENTIAL, PARALLEL, ParallelMergeSort };
 
 struct SimdElement {
   uint32_t index;

@@ -173,8 +173,7 @@ class SMJColumnMaterializer {
           used_output_bloom_filter.get()[hashed_value & BLOOM_FILTER_MASK] = true;
           *elements_iter = MaterializedValue<T>{{RowID(chunk_id, position.chunk_offset())}, value};
           ++elements_iter;
-        }
-        // else {
+        }  // else {
         //   ++filter_count;
         // }
       }

@@ -7,13 +7,11 @@
 #include "operators/join_hash/join_hash_steps.hpp"
 #include "operators/join_helper/join_output_writing.hpp"
 #include "operators/join_simd_sort_merge/field_accessor.hpp"
-#include "operators/join_simd_sort_merge/k_way_merge.hpp"
 #include "operators/join_simd_sort_merge/multiway_merging.hpp"
 #include "operators/join_simd_sort_merge/radix_partitioning.hpp"
 #include "operators/join_simd_sort_merge/simd_sort.hpp"
 #include "operators/join_simd_sort_merge/simd_utils.hpp"
 #include "operators/join_simd_sort_merge/smj_column_materializer.hpp"
-// #include "operators/join_sort_merge/column_materializer.hpp"
 #include "operators/multi_predicate_join/multi_predicate_join_evaluator.hpp"
 #include "scheduler/immediate_execution_scheduler.hpp"
 #include "utils/timer.hpp"
@@ -25,25 +23,18 @@
 
 #include <algorithm>
 #include <bit>
-#include <fstream>
 #include <iterator>
 #include <limits>
 #include <optional>
 #include <span>
 #include <utility>
 
-// #include "operators/join_simd_sort_merge/column_materializer.hpp"
 #include "types.hpp"
 #include "utils/assert.hpp"
 
 namespace {
 template <typename T>
 concept FourByteType = (sizeof(T) == 4);
-
-template <typename Callable, typename T1, typename T2>
-concept RequiresTwoParameters = requires(Callable callable) {
-  { callable(std::declval<T1>(), std::declval<T2>()) };
-};
 
 template <typename T>
 struct Data32BitCompression {
@@ -83,12 +74,6 @@ template <>
 struct Data32BitCompression<hyrise::pmr_string> {
   static uint32_t compress(hyrise::pmr_string& value, const hyrise::pmr_string& min_value [[maybe_unused]],
                            const hyrise::pmr_string& max_value [[maybe_unused]]) {
-    // auto key = uint32_t{0};
-    // const auto string_length = value.length();
-    // for (auto index = std::size_t{0}; index < string_length; index++) {
-    //   key = ((key << 5u) + key) ^ static_cast<uint32_t>(value[index]);
-    // }
-    // return key;
     return XXHash32::hash(&value, value.size() * sizeof(char), 0);
   }
 };
@@ -96,7 +81,7 @@ struct Data32BitCompression<hyrise::pmr_string> {
 constexpr std::size_t choose_count_per_vector() {
 #if defined(__AVX512F__)
   return 8;
-#else
+#else  // We choose a Clang vector size of four for AVX2 (native 256-bit SIMD) and VSX, NEON, etc. (128-bit SIMD).
   return 4;
 #endif
 }
@@ -109,6 +94,7 @@ using radix_partition::Bucket;
 using radix_partition::RadixPartition;
 
 bool JoinSimdSortMerge::supports(const JoinConfiguration config) {
+  // JoinSimdSortMerge supports only equi joins and all required joins modes what are relevant for TPC-H, TPC-DS, and JOB.
   return config.predicate_condition == PredicateCondition::Equals && config.left_data_type == config.right_data_type &&
          (config.join_mode == JoinMode::Inner || config.join_mode == JoinMode::Left ||
           config.join_mode == JoinMode::Right || config.join_mode == JoinMode::FullOuter ||
@@ -191,7 +177,8 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
         _primary_join_predicate{primary_join_predicate},
         _secondary_join_predicates{secondary_join_predicates} {
     constexpr auto THRESHOLD = SYSTEM_L2_CACHE_SIZE / (2 * sizeof(SimdElement));
-    if (left_input_table->row_count() < THRESHOLD || right_input_table->row_count() < THRESHOLD) {
+    // If both input relations can be sorted using a single in-cache sort, we do not partition.
+    if (left_input_table->row_count() <= THRESHOLD && right_input_table->row_count() <= THRESHOLD) {
       _cluster_count = 1;
     }
     _output_pos_lists_left.resize(_cluster_count);
@@ -213,7 +200,7 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
   const JoinMode _mode;
 
   size_t _num_cpus;
-  size_t _cluster_count{CLUSTER_COUNT};
+  size_t _cluster_count{CLUSTER_COUNT};  // Default of 256 buckets.
 
   std::vector<simd_sort::simd_vector<ColumnType>> _sorted_values_left;
   std::vector<simd_sort::simd_vector<ColumnType>> _sorted_values_right;
@@ -352,7 +339,7 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
     auto next = begin;
     std::ranges::advance(next, 1, end);
 
-    if (_compare_value(next->key) > run_value) {
+    if (next == end || _compare_value(next->key) > run_value) {
       return 1;
     }
 
@@ -932,7 +919,10 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
       DebugAssert((simd_sort::is_simd_aligned<SortingType, 64>(input_pointer)), "Input not cache aligned.");
       DebugAssert((simd_sort::is_simd_aligned<SortingType, 64>(output_pointer)), "Output not cache aligned.");
 
+      // If we only have one chunk, we choose a parallel sort strategy.
+      // Otherwise, we use a sequential sort as parallelism is already high.
       if (chunk_count == 1) {
+        // Use ExecutionStrategy::ParallelMergeSort to apply MergePath algorithm in later merge stages.
         simd_sort::sort<count_per_vector, SortingType, ExecutionStrategy::PARALLEL>(input_pointer, output_pointer,
                                                                                     bucket.size);
       } else {
@@ -1030,6 +1020,9 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
     const auto count_per_vector = choose_count_per_vector();
     auto* input_pointer = reinterpret_cast<SortingType*>(input_storage[0].data());
     auto* output_pointer = reinterpret_cast<SortingType*>(working_memory[0].data());
+
+    // For single-threaded microbenchmarks we use the SEQUENTIAL ExecutionStrategy implementation
+    // to avoid Scheduler overhead. Otherwise either PARALLEL or ParallelMergeSort can be used.
     simd_sort::sort<count_per_vector, SortingType, ExecutionStrategy::SEQUENTIAL>(input_pointer, output_pointer,
                                                                                   element_count);
     _performance.set_step_runtime(sort_buckets_step, timer.lap());
@@ -1043,13 +1036,13 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
   std::vector<SimdElementList> _sort_relation(MaterializedSegmentList<ColumnType>& materialized_segments,
                                               auto&& pack_row_id) {
     auto timer = Timer{};
-    constexpr auto MIN_PARTITION_ELEMENTS = 1048576;
-
     auto element_count = std::accumulate(materialized_segments.begin(), materialized_segments.end(), size_t{0},
                                          [](size_t sum, auto& segment) {
                                            return std::move(sum) + segment.size();
                                          });
 
+    // Below this threshold we choose the complete input as one part. Otherwise we split the input into _num_cpu many equi-sized parts.
+    constexpr auto MIN_PARTITION_ELEMENTS = 1048576;
     const auto chunk_count = (element_count <= MIN_PARTITION_ELEMENTS) ? 1 : _num_cpus;
 
     auto transform_to_simd_element = [&](MaterializedValue<ColumnType>& value) {
@@ -1061,6 +1054,7 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
       return std::move(_sort_with_partition_or_merge<SortingType, partition_step, sort_buckets_step>(
           materialized_segments, chunk_count, element_count, transform_to_simd_element, timer));
     }
+    // Non-partitioned SSMJ with one single input part.
     return std::move(_sort_without_partition_or_merge<SortingType, partition_step, sort_buckets_step>(
         materialized_segments, element_count, transform_to_simd_element, timer));
   }
@@ -1237,7 +1231,7 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
       std::cout << "mode: " << _mode << '\n';
 
       if (sizeof(ColumnType) != 4) {
-        PerformanceWarning("Build side larger than probe side in hash join");
+        PerformanceWarning("Column type larger than 32-bits.");
       }
 
       std::cout << "secondary_join_predicates: " << _secondary_join_predicates.size() << '\n';
@@ -1325,9 +1319,6 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
     const auto create_right_side_pos_lists_by_segment =
         (_right_input_table->type() == TableType::References && output_column_order != OutputColumnOrder::RightOnly);
 
-    // A sort merge join's input can be heavily pre-filtered or the join results in very few matches. In contrast to
-    // the hash join, we do not (for now) merge small partitions to keep the sorted chunk guarantees, which could be
-    // exploited by subsequent operators.
     constexpr auto ALLOW_PARTITION_MERGE = true;
     auto output_chunks =
         (output_column_order == OutputColumnOrder::RightOnly)
@@ -1337,10 +1328,6 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
             : write_output_chunks(_output_pos_lists_left, _output_pos_lists_right, _left_input_table,
                                   _right_input_table, create_left_side_pos_lists_by_segment,
                                   create_right_side_pos_lists_by_segment, output_column_order, ALLOW_PARTITION_MERGE);
-    // const ColumnID left_join_column = _sort_merge_join._primary_predicate.column_ids.first;
-    // const ColumnID right_join_column = static_cast<ColumnID>(_sort_merge_join.left_input_table()->column_count() +
-    //                                                          _sort_merge_join._primary_predicate.column_ids.second);
-
     for (auto& chunk : output_chunks) {
       if (_sort_merge_join._primary_predicate.predicate_condition == PredicateCondition::Equals &&
           _mode == JoinMode::Inner) {
@@ -1351,13 +1338,6 @@ class JoinSimdSortMerge::JoinSimdSortMergeImpl : public AbstractReadOnlyOperator
     _performance.set_step_runtime(OperatorSteps::OutputWriting, timer.lap());
 
     auto result_table = _sort_merge_join._build_output_table(std::move(output_chunks));
-
-    // if (_mode != JoinMode::Left && _mode != JoinMode::Right && _mode != JoinMode::FullOuter &&
-    //     _sort_merge_join._primary_predicate.predicate_condition == PredicateCondition::Equals) {
-    //   // Table clustering is not defined for columns storing NULL values. Additionally, clustering is not given for
-    //   // non-equal predicates.
-    //   result_table->set_value_clustered_by({left_join_column, right_join_column});
-    // }
     return result_table;
   }
 };

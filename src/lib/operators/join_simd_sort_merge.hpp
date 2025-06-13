@@ -33,8 +33,6 @@ class JoinSimdSortMerge : public AbstractJoinOperator {
     RightSidePartition,
     LeftSideSortBuckets,
     RightSideSortBuckets,
-    // LeftSideMultiwayMerging,
-    // RightSideMultiwayMerging,
     GatherRowIds,
     FindJoinPartner,
     OutputWriting
@@ -51,7 +49,7 @@ class JoinSimdSortMerge : public AbstractJoinOperator {
   static constexpr auto JOB_SPAWN_THRESHOLD = 500;
 
  protected:
-// Datatype used for simd sorting (has to be 64 bits).
+// Datatype used for SIMD sorting (either double or int64_t).
 #if defined(__AVX512F__)
   using SortingType = double;
 #elif defined(__AVX2__)
