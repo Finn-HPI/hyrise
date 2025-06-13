@@ -236,9 +236,9 @@ set(
     operators/join_simd_sort_merge/k_way_merge.hpp
     operators/join_simd_sort_merge/radix_partitioning.hpp
     operators/join_simd_sort_merge/radix_partitioning_2.hpp
+    operators/join_simd_sort_merge/radix_partitioning_simd_elements.hpp
     operators/join_simd_sort_merge/simd_sort.hpp
     operators/join_simd_sort_merge/smj_column_materializer.hpp
-    operators/join_simd_sort_merge/util.hpp
     operators/join_verification.cpp
     operators/join_verification.hpp
     operators/limit.cpp

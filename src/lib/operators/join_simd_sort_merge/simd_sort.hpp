@@ -299,7 +299,7 @@ constexpr bool is_parallel_strategy(ExecutionStrategy strategy) {
 }
 
 template <std::size_t count_per_vector, typename T,
-          ExecutionStrategy execution_strategy = ExecutionStrategy::ParallelMergeSort>
+          ExecutionStrategy execution_strategy = ExecutionStrategy::SEQUENTIAL>
 void sort(T*& input_ptr, T*& output_ptr, std::size_t element_count) {
   if (element_count <= 0) [[unlikely]] {
     return;

@@ -8,7 +8,6 @@
 
 #include "operators/join_simd_sort_merge/radix_partitioning_simd_elements.hpp"
 #include "operators/join_simd_sort_merge/simd_utils.hpp"
-#include "operators/join_simd_sort_merge/util.hpp"
 #include "types.hpp"
 #include "utils/assert.hpp"
 

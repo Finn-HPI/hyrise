@@ -7,7 +7,7 @@
 
 #include "operators/join_simd_sort_merge/radix_partitioning.hpp"
 #include "operators/join_simd_sort_merge/simd_utils.hpp"
-#include "util.hpp"
+#include "simd_utils.hpp"
 
 namespace hyrise::radix_partition {
 

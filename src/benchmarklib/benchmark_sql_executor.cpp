@@ -9,6 +9,7 @@
 #include <utility>
 
 #include "concurrency/transaction_context.hpp"
+#include "hyrise.hpp"
 #include "operators/join_hash.hpp"
 #include "operators/join_simd_sort_merge.hpp"
 #include "sql/sql_pipeline.hpp"

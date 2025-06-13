@@ -6,7 +6,6 @@
 #include <vector>
 
 #include "operators/join_simd_sort_merge/simd_utils.hpp"
-#include "operators/join_simd_sort_merge/smj_column_materializer.hpp"
 #include "simd_utils.hpp"
 
 namespace hyrise::radix_partition {
@@ -46,13 +45,12 @@ using cache_aligned_vector = simd_sort::simd_vector<T>;
 template <typename ColumnType>
 struct RadixPartition {
  public:
-  explicit RadixPartition(const std::vector<std::span<MaterializedValue<ColumnType>>> materialized_segments,
-                          size_t cluster_count)
+  explicit RadixPartition(std::span<SimdElement> simd_elements, size_t cluster_count)
       : _partition_size(cluster_count),
         _bitshift_count{32u - simd_sort::log2_builtin(cluster_count)},
         _radix_mask{(1u << simd_sort::log2_builtin(cluster_count)) - 1},
         _has_data(true),
-        _materialized_segments(std::move(materialized_segments)) {}
+        _simd_elements(simd_elements) {}
 
   RadixPartition() = default;
 
@@ -84,7 +82,7 @@ struct RadixPartition {
   uint32_t _radix_mask{};
   bool _has_data = false;
   bool _executed = false;
-  std::vector<std::span<MaterializedValue<ColumnType>>> _materialized_segments;
+  std::span<SimdElement> _simd_elements;
   std::vector<Bucket> _partitions;
   std::vector<std::size_t> _partiton_offsets;
 
@@ -97,25 +95,16 @@ struct RadixPartition {
     return key & _radix_mask;  // LSB
   }
 
-  void _iterate_over_segments(auto&& func) {
-    for (auto& segment : _materialized_segments) {
-      for (auto& value : segment) {
-        func(value);
-      }
-    }
-  }
-
-  HistogramData _compute_histogram(auto&& transform_to_simd_element) {
+  HistogramData _compute_histogram() {
     auto histogram_data = HistogramData(_partition_size);
     auto& histogram = histogram_data.histogram;
     auto& cache_aligned_counts = histogram_data.cache_aligned_counts;
 
-    _iterate_over_segments([&](MaterializedValue<ColumnType>& value) {
-      value.element = transform_to_simd_element(value);
-      const auto bucket_index = _bucket_index(value.element.key);
+    for (auto& element : _simd_elements) {
+      const auto bucket_index = _bucket_index(element.key);
       __builtin_prefetch(histogram.data() + bucket_index, 1, 3);
       ++histogram[bucket_index];
-    });
+    }
 
     auto cache_aligned_output_size = std::size_t{0};
     for (auto bucket_index = std::size_t{0}; bucket_index < _partition_size; ++bucket_index) {
@@ -129,16 +118,17 @@ struct RadixPartition {
 
   void __attribute__((always_inline)) _store_cacheline(auto* destination, auto* source) {
     auto nontemporal_store_vec = []<typename VecType>(auto* src, auto* dest) {
-      auto cache_line_vec = simd_sort::load_aligned<VecType>(src);
+      auto cache_line_vec = __builtin_nontemporal_load(src);
       __builtin_nontemporal_store(cache_line_vec, dest);
     };
 #if defined(__AVX512F__)
-
-    using Vec = simd_sort::Vec<64, int64_t>;
+    using Vec = simd_sort::Vec<64, int64_t>;  // 512-bit Vector.
     nontemporal_store_vec.template operator()<Vec>(reinterpret_cast<Vec*>(source), reinterpret_cast<Vec*>(destination));
-
+#elif defined(__powerpc__) || defined(__ppc__) || defined(__PPC__)
+    using Vec = simd_sort::Vec<128, int64_t>;  // 1024-bit Vector.
+    nontemporal_store_vec.template operator()<Vec>(reinterpret_cast<Vec*>(source), reinterpret_cast<Vec*>(destination));
 #else
-    using Vec = simd_sort::Vec<32, int64_t>;
+    using Vec = simd_sort::Vec<32, int64_t>;  // 256-bit Vector.
     nontemporal_store_vec.template operator()<Vec>(reinterpret_cast<Vec*>(source), reinterpret_cast<Vec*>(destination));
     nontemporal_store_vec.template operator()<Vec>(reinterpret_cast<Vec*>(source) + 1,
                                                    reinterpret_cast<Vec*>(destination) + 1);
@@ -147,7 +137,7 @@ struct RadixPartition {
 
  public:
   template <typename SimdVector>
-  void execute(SimdVector& storage_memory, SimdVector& working_memory, auto&& transform_to_simd_element) {
+  void execute(SimdVector& storage_memory, SimdVector& working_memory) {
     DebugAssert(_has_data, "No input data to partition.");
     DebugAssert(!_executed, "RadixPartition execute can only be called once.");
 
@@ -158,16 +148,13 @@ struct RadixPartition {
       _partitions.resize(_partition_size);
       _partiton_offsets.resize(_partition_size);
 
-      const auto cluster_size = std::accumulate(_materialized_segments.begin(), _materialized_segments.end(), size_t{0},
-                                                [](size_t sum, auto& segment) {
-                                                  return std::move(sum) + segment.size();
-                                                });
+      const auto cluster_size = _simd_elements.size();
       storage_memory.reserve(cluster_size);
       working_memory.resize(cluster_size);
 
-      _iterate_over_segments([&](MaterializedValue<ColumnType>& value) {
-        storage_memory.push_back(transform_to_simd_element(value));
-      });
+      for (auto& element : _simd_elements) {
+        storage_memory.push_back(element);
+      }
 
       _partiton_offsets[0] = 0;
       auto& bucket = _partitions[0];
@@ -178,7 +165,7 @@ struct RadixPartition {
     }
 
     auto start_compute_histogram = std::chrono::high_resolution_clock::now();
-    auto histogram_data = std::move(_compute_histogram(transform_to_simd_element));
+    auto histogram_data = std::move(_compute_histogram());
     auto& histogram = histogram_data.histogram;
     auto& cache_aligned_counts = histogram_data.cache_aligned_counts;
 
@@ -216,8 +203,7 @@ struct RadixPartition {
 
     auto start_partitioning = std::chrono::high_resolution_clock::now();
 
-    _iterate_over_segments([&](MaterializedValue<ColumnType>& value) {
-      auto& element = value.element;
+    for (auto& element : _simd_elements) {
       const auto bucket_index = _bucket_index(element.key);
 
       __builtin_prefetch(buffers.data() + bucket_index, 1, 3);
@@ -239,7 +225,7 @@ struct RadixPartition {
 #endif
       }
       buffer.data.output_offset = slot + 1;
-    });
+    }
 
     for (auto bucket_index = std::size_t{0}; bucket_index < _partition_size; ++bucket_index) {
       __builtin_prefetch(buffers.data() + bucket_index, 1, 3);

@@ -9,7 +9,6 @@
 #include "operators/join_simd_sort_merge/circular_buffer.hpp"
 #include "operators/join_simd_sort_merge/radix_partitioning.hpp"
 #include "operators/join_simd_sort_merge/two_way_merge.hpp"
-#include "operators/join_simd_sort_merge/util.hpp"
 
 namespace hyrise::multiway_merging {
 

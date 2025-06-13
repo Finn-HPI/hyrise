@@ -8,7 +8,6 @@
 #include "operators/join_simd_sort_merge/field_accessor.hpp"
 #include "operators/join_simd_sort_merge/simd_sort.hpp"
 #include "operators/join_simd_sort_merge/simd_utils.hpp"
-#include "operators/join_simd_sort_merge/util.hpp"
 
 using namespace hyrise;  // NOLINT(build/namespaces)
 

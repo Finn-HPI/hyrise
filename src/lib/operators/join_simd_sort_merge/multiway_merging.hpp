@@ -9,7 +9,6 @@
 #include "operators/join_simd_sort_merge/circular_buffer.hpp"
 #include "operators/join_simd_sort_merge/radix_partitioning.hpp"
 #include "operators/join_simd_sort_merge/two_way_merge.hpp"
-#include "operators/join_simd_sort_merge/util.hpp"
 
 namespace hyrise::multiway_merging {
 
@@ -146,12 +145,19 @@ class MultiwayMerger {
     }
 
     // Setup buffers for innner nodes.
-    constexpr auto CACHE_USAGE = 0.9;
-    constexpr auto AVAILABLE_L2_CACHE = static_cast<size_t>(L2_SIZE * CACHE_USAGE);
 
-    _buffer_size = (2 * AVAILABLE_L2_CACHE / sizeof(SimdElement)) / count_non_done_inner_nodes;
+    // constexpr auto CACHE_USAGE = 0.9;
+    // constexpr auto AVAILABLE_L2_CACHE = static_cast<size_t>(L2_SIZE * CACHE_USAGE);
+    // _buffer_size = (2 * AVAILABLE_L2_CACHE / sizeof(SimdElement)) / count_non_done_inner_nodes;
+    auto total_fifo_size =
+        (L2_SIZE / sizeof(SimdElement)) - _leaf_count -
+        ((count_non_done_inner_nodes * sizeof(CircularBuffer) + count_non_done_inner_nodes * sizeof(bool) +
+          _leaf_count * sizeof(Relation) + sizeof(SimdElement) - 1) /
+         sizeof(SimdElement));
+
+    _buffer_size = total_fifo_size / count_non_done_inner_nodes;
+
     _read_threshold = _buffer_size / 2;
-
     _fifo_buffer.resize(count_non_done_inner_nodes * _buffer_size);
     auto buffer_index = size_t{0};
     for (auto node_index = first_leaf_index - 1; node_index > ROOT; --node_index) {

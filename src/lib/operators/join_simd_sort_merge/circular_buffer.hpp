@@ -4,7 +4,7 @@
 #include <limits>
 #include <span>
 
-#include "util.hpp"
+#include "simd_utils.hpp"
 
 namespace hyrise::circular_buffer {
 

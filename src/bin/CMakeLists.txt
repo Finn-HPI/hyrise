@@ -48,6 +48,18 @@ target_link_libraries(
     hyriseBenchmarkLib
 )
 
+add_executable(
+    hyriseRadixPartitioningBench
+
+    partitioning_benchmark.cpp
+)
+
+target_link_libraries(
+    hyriseRadixPartitioningBench
+    hyrise
+    hyriseBenchmarkLib
+)
+
 target_include_directories(hyriseBalkesenComparison
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/balkesen_files

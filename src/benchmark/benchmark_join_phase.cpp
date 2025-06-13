@@ -10,7 +10,6 @@
 #include <boost/sort/pdqsort/pdqsort.hpp>
 
 #include "operators/join_simd_sort_merge/simd_utils.hpp"
-#include "operators/join_simd_sort_merge/util.hpp"
 #include "types.hpp"
 
 using namespace hyrise;  // NOLINT(build/namespaces)

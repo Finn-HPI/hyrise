@@ -5,8 +5,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <span>
 #include <utility>
 #include <vector>
+
+#include "utils/assert.hpp"
 
 #if defined(__AVX2__) || defined(__AVX512F__)
 #include <immintrin.h>
@@ -18,9 +21,91 @@
 
 #ifndef SYSTEM_L2_CACHE_SIZE
 constexpr auto L2_SIZE = 1048576;  // 1024 KiB (default)
+constexpr SYSTEM_L2_CACHE_SIZE = L2_SIZE;
+#elif defined(__AVX512F__)
+constexpr auto L2_SIZE = 1048576;  //SYSTEM_L2_CACHE_SIZE;
 #else
 constexpr auto L2_SIZE = SYSTEM_L2_CACHE_SIZE;
 #endif
+
+namespace hyrise::radix_partition {
+
+constexpr auto RADIX_BITS = uint8_t{8};
+constexpr auto HASH_MASK = std::size_t{(1u << RADIX_BITS) - 1};
+
+#if defined(__powerpc__) || defined(__ppc__) || defined(__PPC__)
+constexpr auto CACHE_LINE_SIZE = std::size_t{128};
+#else
+constexpr auto CACHE_LINE_SIZE = std::size_t{64};
+#endif
+
+constexpr auto TUPLES_PER_CACHELINE = CACHE_LINE_SIZE / 8;
+
+// Select number of cache lines depending on underlying hardware
+#if defined(__arm__)
+constexpr auto NUM_CACHE_LINES = 4;
+#elif defined(__powerpc__) || defined(__ppc__) || defined(__PPC__)
+constexpr auto NUM_CACHE_LINES = 1;
+#else
+constexpr auto NUM_CACHE_LINES = 2;
+#endif
+
+constexpr auto BUFFER_SIZE = TUPLES_PER_CACHELINE * NUM_CACHE_LINES;
+
+static constexpr std::size_t align_to_cacheline(std::size_t value) {
+  return (value + BUFFER_SIZE - 1) & ~(BUFFER_SIZE - 1);
+}
+}  // namespace hyrise::radix_partition
+
+namespace hyrise {
+
+// constexpr auto THREAD_COUNT = 8;
+
+enum class ExecutionStrategy : std::uint8_t { SEQUENTIAL, PARALLEL, ParallelMergeSort };
+
+struct SimdElement {
+  uint32_t index;
+  uint32_t key;
+
+  friend std::ostream& operator<<(std::ostream& stream, const SimdElement& element) {
+    stream << "(" << element.key << "," << element.index << ")";
+    return stream;
+  }
+
+  bool operator==(const SimdElement& other) const {
+    return index == other.index && key == other.key;
+  }
+};
+
+struct Relation {
+  SimdElement* tuples;
+  uint64_t num_tuples;
+
+  template <typename T>
+  T* begin() const {
+    return reinterpret_cast<T*>(tuples);
+  }
+
+  template <typename T>
+  T* end() const {
+    return reinterpret_cast<T*>(tuples + num_tuples);
+  }
+
+  bool empty() const {
+    return num_tuples == 0;
+  }
+
+  std::span<SimdElement> elements() const {
+    return {tuples, num_tuples};
+  }
+
+  void retrieve_elements(size_t count) {
+    DebugAssert(count <= num_tuples, "Can not retrieve more elements than currently in Bucket.");
+    num_tuples -= count;
+    tuples += count;
+  }
+};
+}  // namespace hyrise
 
 namespace hyrise::simd_sort {
 

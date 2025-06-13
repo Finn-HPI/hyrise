@@ -15,7 +15,6 @@
 #include "operators/join_simd_sort_merge/radix_partitioning_2.hpp"
 #include "operators/join_simd_sort_merge/simd_sort.hpp"
 #include "operators/join_simd_sort_merge/simd_utils.hpp"
-#include "operators/join_simd_sort_merge/util.hpp"
 #include "rdtsc.hpp"
 #include "scheduler/immediate_execution_scheduler.hpp"
 #include "scheduler/node_queue_scheduler.hpp"
