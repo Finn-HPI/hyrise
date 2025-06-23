@@ -23,7 +23,7 @@
 constexpr auto L2_SIZE = 1048576;  // 1024 KiB (default)
 constexpr SYSTEM_L2_CACHE_SIZE = L2_SIZE;
 #elif defined(__AVX512F__)
-constexpr auto L2_SIZE = 1048576;  //SYSTEM_L2_CACHE_SIZE;
+constexpr auto L2_SIZE = 1048576;  // For nx05 otherwise use SYSTEM_L2_CACHE_SIZE.
 #else
 constexpr auto L2_SIZE = SYSTEM_L2_CACHE_SIZE;
 #endif
@@ -44,10 +44,10 @@ constexpr auto TUPLES_PER_CACHELINE = CACHE_LINE_SIZE / 8;
 // Select number of cache lines depending on underlying hardware
 #if defined(__arm__)
 constexpr auto NUM_CACHE_LINES = 4;
-#elif defined(__powerpc__) || defined(__ppc__) || defined(__PPC__)
-constexpr auto NUM_CACHE_LINES = 1;
-#else
+#elif defined(__AVX512F__)
 constexpr auto NUM_CACHE_LINES = 2;
+#else
+constexpr auto NUM_CACHE_LINES = 1;
 #endif
 
 constexpr auto BUFFER_SIZE = TUPLES_PER_CACHELINE * NUM_CACHE_LINES;
